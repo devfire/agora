@@ -2,56 +2,11 @@
 
 ## Overview
 
-This document provides architectural guidance for enhancing the Agora multicast chat application with interactive stdin input capabilities. Three enhancement options are presented, ranging from simple to comprehensive implementations.
+This document provides a possible roadmap for agora evolution. NOTE: mostly LLM generated.
 
-## 🎯 Enhancement Options
+## Future Enhancement Ideas
 
-### Option 1: Simple Interactive Chat
-*Minimal changes, quick implementation (2-4 hours)*
-
-**Core Features:**
-- Add a third async task for stdin input handling
-- Users type messages that get broadcast to all participants
-- Simple display format: `[sender_id]: message`
-- Non-blocking stdin reading using tokio
-
-**Architecture Changes:**
-```mermaid
-graph TB
-    subgraph "Enhanced Chat App"
-        A[UDP Intake Task] -->|Messages| B[MPSC Channel]
-        B --> C[Chat Processing Task]
-        C -->|Display| D[Terminal Output]
-        E[Stdin Input Task] -->|User Input| F[Network Manager]
-        F -->|Broadcast| G[Multicast Group]
-    end
-```
-
-**Key Implementation:**
-- Add `spawn_stdin_input_task()` in processor.rs
-- Use `tokio::io::stdin()` with `AsyncBufReadExt`
-- **Modify `spawn_chat_processing_task()`**: Remove auto-reply logic, only display messages
-- Simple message display without threading
-
-**Task Responsibilities:**
-- **`spawn_udp_intake_task()`** [UNCHANGED]: UDP packets → MPSC channel
-- **`spawn_chat_processing_task()`** [MODIFIED]: MPSC channel → Display only (remove lines 44-55 auto-reply)
-- **`spawn_stdin_input_task()`** [NEW]: Stdin input → UDP broadcast
-
-**Current vs Proposed Flow:**
-```
-Current (bidirectional):
-UDP In → MPSC → chat_processing → Display + Auto-reply → UDP Out
-
-Proposed (unidirectional):
-UDP In → MPSC → chat_processing → Display Only
-Stdin → stdin_input_task → UDP Out
-```
-
----
-
-### Option 2: Command-Based Chat System
-*Moderate complexity, better UX (1-2 days)*
+### Phase 2: Command-Based Chat System
 
 **Core Features:**
 - Stdin commands: `/nick`, `/list`, `/quit`, `/help`
