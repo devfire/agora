@@ -1,4 +1,5 @@
 use crate::{message::ChatMessage, message_handler::MessageHandler, network};
+use anyhow::bail;
 use std::sync::Arc;
 
 use tokio::{
@@ -24,7 +25,7 @@ impl Processor {
     }
 
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
-    pub async fn spawn_message_display_task(&self) -> JoinHandle<Result<(), String>> {
+    pub async fn spawn_message_display_task(&self) -> JoinHandle<anyhow::Result<()>> {
         let message_handler = Arc::clone(&self.message_handler);
 
         tokio::spawn(async move {
@@ -42,7 +43,7 @@ impl Processor {
                     }
                     Err(e) => {
                         error!("Message channel error: {}", e);
-                        return Err(format!("Chat processing task failed: {}", e));
+                        bail!("Chat processing task failed: {}", e);
                     }
                 }
             }
@@ -53,7 +54,7 @@ impl Processor {
     /// This task receives messages from multicast and sends them to MPSC channel.
     /// MessageHandler will handle the receiving end of the MPSC channel and forward messages back to channel.
     /// Then, receive_message() will trigger the spawn_message_display_task() to print messages to console.
-    pub async fn spawn_udp_intake_task(&self) -> JoinHandle<anyhow::Result<(), String>> {
+    pub async fn spawn_udp_intake_task(&self) -> JoinHandle<anyhow::Result<()>> {
         let network_manager = Arc::clone(&self.network_manager);
         let message_handler = Arc::clone(&self.message_handler);
 
@@ -73,9 +74,7 @@ impl Processor {
                         );
 
                         // Send message to MPSC channel (non-blocking)
-                        message_handler
-                            .try_send_message(message.clone())
-                            .map_err(|e| e.to_string())?;
+                        message_handler.try_send_message(message.clone())?;
                     }
                     Err(network::NetworkError::DeserializationError(e)) => {
                         // Log malformed messages but continue processing
@@ -84,7 +83,7 @@ impl Processor {
                     }
                     Err(e) => {
                         error!("UDP message reception error: {}", e);
-                        return Err(format!("UDP intake task failed: {}", e));
+                        bail!("UDP intake task failed: {}", e);
                     }
                 }
             }
