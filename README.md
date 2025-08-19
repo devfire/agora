@@ -4,7 +4,22 @@ Agora is a fully decentralized chat system communicating over UDP multicast.
 
 ## Overview
 
+Agora allows multiple clients to communicate with each other in a peer-to-peer fashion without a central server. Messages are broadcasted to a multicast group, and every member of the group receives the messages.
+
 ## Development
+
+### Prerequisites
+
+*   [Rust](https://www.rust-lang.org/tools/install)
+*   [Protocol Buffers Compiler](https://grpc.io/docs/protoc-installation/)
+
+### Building the Project
+
+To build the project, run the following command:
+
+```sh
+cargo build
+```
 
 ### Running Tests
 
@@ -16,185 +31,100 @@ cargo test
 
 ### Building the Protocol Buffers
 
-The project uses Protocol Buffers for message serialization. If you modify the `.proto` files, you'll need to rebuild the generated Rust code:
-
-```sh
-cargo build
-```
+The project uses Protocol Buffers for message serialization. If you modify the `.proto` files, you'll need to rebuild the generated Rust code. The build script handles this automatically when you run `cargo build`.
 
 ## Message Flow Architecture
 
-The following diagram illustrates how messages traverse through the Agora chat system:
+The following diagrams illustrate how messages traverse through the Agora chat system.
 
+### High-Level Message Flow
+
+```mermaid
+graph TD
+    subgraph Chat Network
+        ClientA[Chat Client A]
+        ClientB[Chat Client B]
+        ClientC[Chat Client C]
+    end
+
+    subgraph UDP Multicast
+        NetworkLayer(239.255.255.250:8080)
+    end
+
+    ClientA -- sends/receives --> NetworkLayer
+    ClientB -- sends/receives --> NetworkLayer
+    ClientC -- sends/receives --> NetworkLayer
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                    AGORA MESSAGE FLOW                                │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-│  Chat Client A  │         │  Chat Client B  │         │  Chat Client C  │
-│                 │         │                 │         │                 │
-│ [NetworkManager]│◄────────┤ [NetworkManager]├────────►│ [NetworkManager]│
-└─────────────────┘         └─────────────────┘         └─────────────────┘
-         │                           │                           │
-         │          UDP Multicast    │                           │
-         │       239.255.255.250     │                           │
-         │           :8080           │                           │
-         └───────────────────────────┼───────────────────────────┘
-                                     │
-                              ╔══════▼══════╗
-                              ║   NETWORK   ║
-                              ║  MULTICAST  ║
-                              ║    LAYER    ║
-                              ╚═════════════╝
+### Single Chat App Detail
 
-────────────────────────────── SINGLE CHAT APP DETAIL ────────────────────────────
+```mermaid
+graph TD
+    subgraph Initialization
+        main["main()"]
+    end
 
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              CHAT INTERNAL FLOW                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+    subgraph Components
+        NetworkManager
+        MessageHandler
+        Processor
+    end
+    
+    subgraph Async Tasks
+        UDP_Intake["Task 1: UDP Intake"]
+        Chat_Process["Task 2: Chat Process"]
+    end
 
-    ┌─────────────┐
-    │    main()   │
-    └──────┬──────┘
-           │ 1. Initialize components
-           ▼
-    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
-    │NetworkManager│    │MessageHandler│    │ Processor   │
-    └──────────────┘    └──────────────┘    └─────────────┘
-           │                    │                 │
-           │                    │ 2. Spawn tasks  │
-           │                    │                 ▼
-           │                    │          ┌─────────────┐
-           │                    │          │   Task 1:   │
-           │                    │          │ UDP Intake  │
-           │                    │          └─────────────┘
-           │                    │                 │
-           │                    │                 ▼
-           │                    │          ┌─────────────┐
-           │                    │          │   Task 2:   │
-           │                    │          │Chat Process │
-           │                    │          └─────────────┘
+    main -- 1. Initialize components --> NetworkManager
+    main -- 1. Initialize components --> MessageHandler
+    main -- 1. Initialize components --> Processor
 
-────────────────────────────── MESSAGE FLOW STEPS ──────────────────────────────
-
-INCOMING MESSAGE FLOW:
-┌─┐
-│1│ UDP Multicast Message Received
-└─┘         │
-            ▼
-     ┌─────────────────┐
-     │  NetworkManager │
-     │  .receive_msg() │  ◄── BLOCKS on socket.recv_from().await
-     └─────────────────┘       (async cooperative blocking)
-            │ Deserializes protobuf
-            ▼
-┌─┐  ┌─────────────────┐
-│2│  │ UDP Intake Task │  ◄── Runs in continuous loop
-└─┘  │ (processor.rs)  │       Awaits UDP socket data
-     └─────────────────┘
-            │
-            ▼
-     ┌─────────────────┐
-     │ MessageHandler  │
-     │.try_send_msg()  │  ◄── Non-blocking send to MPSC channel
-     └─────────────────┘       (Drops if buffer full)
-            │
-            ▼
-     ┌─────────────────┐
-     │ MPSC Channel    │  ◄── Buffered queue (default: 100 messages)
-     │   (Tokio)       │
-     └─────────────────┘
-            │
-            ▼
-┌─┐  ┌─────────────────┐
-│3│  │Chat Process Task│  ◄── Runs in continuous loop
-└─┘  │ (processor.rs)  │       BLOCKS on channel receive
-     └─────────────────┘
-            │
-            ▼
-     ┌─────────────────┐
-     │ MessageHandler  │
-     │ .receive_msg()  │  ◄── BLOCKS on channel.recv().await
-     └─────────────────┘       Filters out self-messages
-            │
-            ▼
-     ┌─────────────────┐
-     │ Message Filter  │  ◄── if msg.sender_id == self.chat_id: skip
-     │  (Self-filter)  │       (continues loop if self-message)
-     └─────────────────┘
-            │
-            ▼
-┌─┐       │
-│4│ ┌─────▼──────┐
-└─┘ │Display Msg │
-    └────────────┘
-            │
-            ▼
-    ┌─────────────────┐
-    │  get_chat_input │  ◄── BLOCKS on stdin.read_line()
-    │   (chat.rs)     │       (synchronous blocking)
-    └─────────────────┘
-            │
-            ▼
-
-OUTGOING MESSAGE FLOW:
-┌─┐  ┌─────────────────┐
-│5│  │Create Response  │
-└─┘  │  ChatMessage    │  ◄── ChatMessage::new(chat_id, input)
-     └─────────────────┘
-            │
-            ▼
-     ┌─────────────────┐
-     │  NetworkManager │
-     │  .send_msg()    │  ◄── Serializes to protobuf
-     └─────────────────┘
-            │
-            ▼
-┌─┐  ┌─────────────────┐
-│6│  │ UDP Multicast   │  ◄── Broadcast to all agents
-└─┘  │   Broadcast     │
-     └─────────────────┘
-
-────────────────────────────── KEY COMPONENTS ──────────────────────────────
-
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                COMPONENT DETAILS                               │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-NetworkManager:
-├── Uses socket2 for advanced UDP configuration
-├── SO_REUSEADDR + SO_REUSEPORT for multiple agents per machine
-├── Joins IPv4 multicast group (239.255.255.250:8080 default)
-├── Serializes/deserializes messages using protobuf
-└── 64KB buffer for message reception
-
-MessageHandler:
-├── MPSC channel with configurable buffer (default: 100)
-├── Non-blocking try_send() for UDP intake
-├── Blocking receive() with self-message filtering
-├── Thread-safe using Arc<Mutex<Receiver>>
-└── Handles buffer overflow gracefully
-
-Processor:
-├── Orchestrates two independent async tasks
-├── UDP Intake Task: Network → Channel (continuous)
-├── Chat Process Task: Channel → Response (continuous)
-└── Both tasks run concurrently using tokio::spawn
-
-ChatMessage (protobuf):
-├── sender_id: String (agent identifier)
-├── timestamp: int64 (Unix timestamp)
-├── content: String (message payload)
-└── Automatic serialization/deserialization
-
-Error Handling:
-├── Network errors: Continue processing other messages
-├── Deserialization errors: Log and skip malformed messages
-├── Channel buffer full: Drop messages with warning
-├── Self-message filtering: Prevents infinite loops
-└── Graceful degradation on component failures
+    Processor -- 2. Spawn tasks --> UDP_Intake
+    Processor -- 2. Spawn tasks --> Chat_Process
 ```
+
+### Detailed Message Flow
+
+#### Incoming Message Flow
+
+```mermaid
+sequenceDiagram
+    participant UDP as UDP Multicast
+    participant NM as NetworkManager
+    participant UIT as UDP Intake Task
+    participant MH as MessageHandler
+    participant CPT as Chat Process Task
+    participant UI as User Interface
+
+    UDP->>+NM: Receives message
+    NM->>NM: Deserializes protobuf
+    NM->>-UIT: Sends deserialized message
+    UIT->>+MH: try_send_msg() (non-blocking)
+    MH->>-CPT: Sends message via MPSC channel
+    CPT->>+MH: receive_msg() (blocking)
+    MH->>MH: Filters out self-messages
+    MH->>-UI: Displays message
+```
+
+#### Outgoing Message Flow
+
+```mermaid
+sequenceDiagram
+    participant UI as User Interface
+    participant NM as NetworkManager
+    participant UDP as UDP Multicast
+
+    UI->>+NM: Creates ChatMessage
+    NM->>NM: Serializes to protobuf
+    NM->>-UDP: Broadcasts message
+```
+
+## Key Components
+
+*   **NetworkManager**: Handles UDP multicast communication, including sending and receiving messages. It uses `socket2` for advanced socket configuration.
+*   **MessageHandler**: Manages the MPSC channel for decoupling network I/O from message processing.
+*   **Processor**: Orchestrates the asynchronous tasks for handling incoming and outgoing messages.
+*   **ChatMessage (protobuf)**: The data structure for chat messages, defined in `.proto` files.
 
 ## License
 
