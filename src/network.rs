@@ -196,7 +196,7 @@ impl NetworkManager {
         match self.socket.recv_from(&mut buffer).await {
             Ok((bytes_received, sender_addr)) => {
                 tracing::debug!(
-                    "Received {} bytes from {} on agent {}",
+                    "Received {} bytes from {} on client {}",
                     bytes_received,
                     sender_addr,
                     self.agent_id
@@ -209,7 +209,7 @@ impl NetworkManager {
                 match ChatMessage::deserialize(&buffer) {
                     Ok(message) => {
                         tracing::debug!(
-                            "Successfully deserialized message from agent {} with content: '{}'",
+                            "Successfully deserialized message from client {} with content: '{}'",
                             message.sender_id,
                             message.content.chars().take(50).collect::<String>()
                         );

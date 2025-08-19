@@ -1,6 +1,6 @@
 use clap::Parser;
-use uuid::Uuid;
 use std::net::SocketAddr;
+use uuid::Uuid;
 
 /// Command-line arguments for the AI Agent Swarm
 #[derive(Parser, Debug)]
@@ -13,18 +13,28 @@ use std::net::SocketAddr;
 pub struct ChatArgs {
     /// Unique identifier for this agent
     #[arg(
-        short = 'i',
-        long = "chat-id",
+        short = 'c',
+        // long = "chat-id",
         help = "Unique identifier for this chat",
         default_value_t = Uuid::new_v4().to_string(),
         value_name = "ID"
     )]
     pub chat_id: String,
 
+    /// Log level filter
+    #[arg(
+        short = 'l',
+        // long = "log-level",
+        help = "Set the log level",
+        default_value = "info",
+        value_parser = ["error", "warn", "info", "debug", "trace"]
+    )]
+    pub log_level: String,
+
     /// UDP multicast address for agent communication
     #[arg(
-        short = 'a',
-        long = "multicast-address",
+        short = 'm',
+        // long = "multicast-address",
         help = "UDP multicast address for agent communication",
         default_value = "239.255.255.250:8080",
         value_name = "ADDRESS:PORT"
@@ -33,20 +43,12 @@ pub struct ChatArgs {
 
     /// Network interface to bind to (optional)
     #[arg(
-        long = "interface",
+        short = 'i',
+        // long = "interface",
         help = "Network interface to bind to (e.g., 'eth0', '192.168.1.100')",
         value_name = "INTERFACE"
     )]
     pub interface: Option<String>,
-
-    /// Log level filter
-    #[arg(
-        long = "log-level",
-        help = "Set the log level",
-        default_value = "info",
-        value_parser = ["error", "warn", "info", "debug", "trace"]
-    )]
-    pub log_level: String,
 }
 
 impl ChatArgs {

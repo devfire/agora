@@ -2,7 +2,6 @@ use clap::Parser;
 
 mod cli;
 
-mod chat;
 mod message;
 mod message_handler;
 mod network;
@@ -24,7 +23,7 @@ use tracing_subscriber;
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing subscriber for logging
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_thread_ids(true)
         .with_thread_names(true)
         .with_file(true)
@@ -60,22 +59,26 @@ async fn main() -> anyhow::Result<()> {
 
     let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
-    let processor = Processor::new(
-        Arc::clone(&message_handler),
-        Arc::clone(&network_manager),
-        args.chat_id.clone(),
-    );
+    let processor = Processor::new(Arc::clone(&message_handler), Arc::clone(&network_manager));
 
     // Spawn UDP message intake task
     let udp_intake_handle = processor.spawn_udp_intake_task().await;
-    info!("UDP message intake task spawned");
+    debug!("UDP message intake task spawned");
 
     // Spawn chat processing task, which handles incoming messages from the channel
-    let chat_processing_handle = processor.spawn_chat_processing_task().await;
-    info!("Chat processing task spawned");
+    let chat_processing_handle = processor.spawn_message_display_task().await;
+    debug!("Chat processing task spawned");
+
+    // Spawn stdin input task to read user input and send messages
+    let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id).await;
+    debug!("Stdin input task spawned");
 
     // Wait for tasks to complete (they run indefinitely)
-    let _result = tokio::try_join!(udp_intake_handle, chat_processing_handle)?;
+    let _result = tokio::try_join!(
+        udp_intake_handle,
+        chat_processing_handle,
+        stdin_input_handle
+    )?;
 
     Ok(())
 }
