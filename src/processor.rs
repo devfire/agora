@@ -49,8 +49,10 @@ impl Processor {
         })
     }
 
-    /// Spawn UDP message intake task for continuous message reception
-    /// This task receives messages from UDP multicast and sends them to MPSC channel
+    /// Spawn UDP message intake task for continuous message reception.
+    /// This task receives messages from multicast and sends them to MPSC channel.
+    /// MessageHandler will handle the receiving end of the MPSC channel and forward messages back to channel.
+    /// Then, receive_message() will trigger the spawn_message_display_task() to print messages to console.
     pub async fn spawn_udp_intake_task(&self) -> JoinHandle<anyhow::Result<(), String>> {
         let network_manager = Arc::clone(&self.network_manager);
         let message_handler = Arc::clone(&self.message_handler);
@@ -90,7 +92,7 @@ impl Processor {
     }
 
     /// Spawn a task to handle user input from stdin.
-    /// This task reads lines from stdin and sends them as messages to the network manager.
+    /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
     pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> JoinHandle<Result<(), String>> {
         let network_manager = Arc::clone(&self.network_manager);
 
