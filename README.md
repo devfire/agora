@@ -9,8 +9,14 @@ Agora allows multiple clients to communicate with each other in a peer-to-peer f
 ## Key Components
 
 *   **NetworkManager**: Handles UDP multicast communication, including sending and receiving messages. It uses `socket2` for advanced socket configuration.
-*   **MessageHandler**: Manages the MPSC channel for decoupling network I/O from message processing. NOTE: Strictly speaking probably not needed but I started down this path and it got to be too much to change it. 
+*   **MessageHandler**: Manages the MPSC channel for decoupling network I/O from message processing. 
+    
+    *  NOTE: Strictly speaking probably not needed but I started down this path and it got to be too much to change it. 
+    *  Mostly because MPSC is multiple producer **single** consumer and while type of a channel works with a single consumer (MessageHandler), it would no longer work with a bunch of tokio tasks talking to each other.
 *   **Processor**: Orchestrates the asynchronous tasks for handling incoming and outgoing messages.
+    *   Starts 3 tasks in parallel: stdin input, multicast input, display on screen
+    *   Whichever wakes up first, does the thing it is meant to do
+    *   All run in parallel though
 *   **ChatMessage (protobuf)**: The data structure for chat messages, defined in `.proto` files.
 
 ## Development
