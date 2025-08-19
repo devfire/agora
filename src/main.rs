@@ -21,15 +21,6 @@ use tracing_subscriber;
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing subscriber for logging
-    tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
-        .init();
-
     // Parse command-line arguments
     let args = ChatArgs::parse();
 
@@ -43,6 +34,15 @@ async fn main() -> anyhow::Result<()> {
         "Starting chat '{}' with multicast address {}",
         args.chat_id, args.multicast_address
     );
+
+    // Initialize tracing subscriber for logging
+    tracing_subscriber::fmt()
+        .with_max_level(args.log_level.parse::<Level>().unwrap_or(Level::INFO))
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
 
     // Create network configuration
     let network_config = NetworkConfig {
