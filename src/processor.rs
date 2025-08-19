@@ -93,7 +93,7 @@ impl Processor {
 
     /// Spawn a task to handle user input from stdin.
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
-    pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> JoinHandle<Result<(), String>> {
+    pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> JoinHandle<anyhow::Result<()>> {
         let network_manager = Arc::clone(&self.network_manager);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
@@ -103,14 +103,11 @@ impl Processor {
             let reader = BufReader::new(stdin);
             let mut lines = reader.lines();
 
-            while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+            while let Some(line) = lines.next_line().await? {
                 if !line.trim().is_empty() {
                     // Create and send user's message
                     let message = ChatMessage::new(chat_id.clone(), line);
-                    network_manager
-                        .send_message(&message)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    network_manager.send_message(&message).await?;
                 }
             }
             Ok(())
