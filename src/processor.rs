@@ -59,7 +59,7 @@ impl Processor {
         let message_handler = Arc::clone(&self.message_handler);
 
         tokio::spawn(async move {
-            info!(
+            debug!(
                 "Starting UDP message intake task for agent '{}'",
                 message_handler.chat_id()
             );
@@ -104,8 +104,8 @@ impl Processor {
 
             loop {
                 // Print prompt to stderr (unbuffered)
-                eprint!("> ");
-                
+                eprint!("{} > ", chat_id);
+
                 if let Some(line) = lines.next_line().await? {
                     if !line.trim().is_empty() {
                         // Create and send user's message
