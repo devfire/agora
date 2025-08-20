@@ -139,7 +139,7 @@ impl NetworkManager {
                     ))
                 })?;
 
-            tracing::info!(
+            tracing::debug!(
                 "Joined multicast group {}:{} on interface {}",
                 multicast_ip,
                 multicast_v4.port(),
