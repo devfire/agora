@@ -3,7 +3,7 @@ use anyhow::bail;
 use std::sync::Arc;
 
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     task::JoinHandle,
 };
 use tracing::{debug, error, info, warn};
@@ -102,11 +102,19 @@ impl Processor {
             let reader = BufReader::new(stdin);
             let mut lines = reader.lines();
 
-            while let Some(line) = lines.next_line().await? {
-                if !line.trim().is_empty() {
-                    // Create and send user's message
-                    let message = ChatMessage::new(chat_id.clone(), line);
-                    network_manager.send_message(&message).await?;
+            loop {
+                // Print prompt to stderr (unbuffered)
+                eprint!("> ");
+                
+                if let Some(line) = lines.next_line().await? {
+                    if !line.trim().is_empty() {
+                        // Create and send user's message
+                        let message = ChatMessage::new(chat_id.clone(), line);
+                        network_manager.send_message(&message).await?;
+                    }
+                } else {
+                    // EOF reached, break the loop
+                    break;
                 }
             }
             Ok(())
