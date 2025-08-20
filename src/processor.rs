@@ -3,10 +3,10 @@ use anyhow::bail;
 use std::sync::Arc;
 
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
     task::JoinHandle,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub struct Processor {
     message_handler: Arc<MessageHandler>,
