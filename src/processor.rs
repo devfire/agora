@@ -6,7 +6,7 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     task::JoinHandle,
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct Processor {
     message_handler: Arc<MessageHandler>,
@@ -113,11 +113,12 @@ impl Processor {
                         network_manager.send_message(&message).await?;
                     }
                 } else {
-                    // EOF reached, break the loop
-                    break;
+                    // EOF reached (Ctrl+D), exit cleanly
+                    info!("Received EOF (Ctrl+D), exiting chat application");
+                    std::process::exit(0);
                 }
             }
-            Ok(())
+            // Ok(())
         })
     }
 }
