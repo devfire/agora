@@ -6,7 +6,7 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     task::JoinHandle,
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct Processor {
     message_handler: Arc<MessageHandler>,
@@ -25,8 +25,9 @@ impl Processor {
     }
 
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
-    pub async fn spawn_message_display_task(&self) -> JoinHandle<anyhow::Result<()>> {
+    pub async fn spawn_message_display_task(&self, chat_id: &str) -> JoinHandle<anyhow::Result<()>> {
         let message_handler = Arc::clone(&self.message_handler);
+        let chat_id = chat_id.to_string();
 
         tokio::spawn(async move {
             loop {
@@ -38,8 +39,10 @@ impl Processor {
                             message.content // message.content.chars().take(50).collect::<String>()
                         );
 
-                        println!("{}: {}", message.sender_id, message.content);
-                        // println!("{}: {}", chat_id, response_content);
+                        // Clear the current prompt line and print the message, then re-display prompt
+                        eprint!("\r\x1b[K"); // Carriage return and clear line
+                        eprintln!("{}: {}", message.sender_id, message.content);
+                        eprint!("{} > ", chat_id); // Re-display the prompt
                     }
                     Err(e) => {
                         error!("Message channel error: {}", e);
@@ -113,11 +116,12 @@ impl Processor {
                         network_manager.send_message(&message).await?;
                     }
                 } else {
-                    // EOF reached, break the loop
-                    break;
+                    // EOF reached (Ctrl+D), exit cleanly
+                    info!("Received EOF (Ctrl+D), exiting chat application");
+                    std::process::exit(0);
                 }
             }
-            Ok(())
+            // Ok(())
         })
     }
 }

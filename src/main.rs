@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     debug!("UDP message intake task spawned");
 
     // Spawn chat processing task, which handles incoming messages from the channel
-    let chat_processing_handle = processor.spawn_message_display_task().await;
+    let chat_processing_handle = processor.spawn_message_display_task(&args.chat_id).await;
     debug!("Chat processing task spawned");
 
     // Spawn stdin input task to read user input and send messages
