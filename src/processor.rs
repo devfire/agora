@@ -1,12 +1,10 @@
 use crate::{message::ChatMessage, message_handler::MessageHandler, network};
 use anyhow::bail;
+use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
 
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    task::JoinHandle,
-};
-use tracing::{debug, error, info, warn};
+use tokio::task::JoinHandle;
+use tracing::{debug, error, warn};
 
 pub struct Processor {
     message_handler: Arc<MessageHandler>,
@@ -25,7 +23,10 @@ impl Processor {
     }
 
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
-    pub async fn spawn_message_display_task(&self, chat_id: &str) -> JoinHandle<anyhow::Result<()>> {
+    pub async fn spawn_message_display_task(
+        &self,
+        chat_id: &str,
+    ) -> JoinHandle<anyhow::Result<()>> {
         let message_handler = Arc::clone(&self.message_handler);
         let chat_id = chat_id.to_string();
 
@@ -101,27 +102,43 @@ impl Processor {
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         debug!("Starting stdin input task for agent '{}'", chat_id);
         tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            let reader = BufReader::new(stdin);
-            let mut lines = reader.lines();
+            // Initialize rustyline editor for input with history support
+            let mut rustyline_editor = DefaultEditor::new()?;
 
             loop {
                 // Print prompt to stderr (unbuffered)
-                eprint!("{} > ", chat_id);
+                // eprint!("{} > ", chat_id);
+                let readline = rustyline_editor.readline(&format!("{} > ", chat_id));
 
-                if let Some(line) = lines.next_line().await? {
-                    if !line.trim().is_empty() {
-                        // Create and send user's message
+                match readline {
+                    Ok(line) => {
+                        rustyline_editor.add_history_entry(line.as_str())?;
                         let message = ChatMessage::new(chat_id.clone(), line);
                         network_manager.send_message(&message).await?;
                     }
-                } else {
-                    // EOF reached (Ctrl+D), exit cleanly
-                    info!("Received EOF (Ctrl+D), exiting chat application");
-                    std::process::exit(0);
+                    Err(ReadlineError::Interrupted) => {
+                        let message = ChatMessage::new(
+                            chat_id.clone(),
+                            "User has left the chat.".to_string(),
+                        );
+                        network_manager.send_message(&message).await?;
+                        std::process::exit(0);
+                    }
+                    Err(ReadlineError::Eof) => {
+                        let message = ChatMessage::new(
+                            chat_id.clone(),
+                            "User has left the chat.".to_string(),
+                        );
+                        network_manager.send_message(&message).await?;
+                        std::process::exit(0);
+                    }
+                    Err(err) => {
+                        println!("Error: {:?}", err);
+                        break;
+                    }
                 }
             }
-            // Ok(())
+            Ok(())
         })
     }
 }
