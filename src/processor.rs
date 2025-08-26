@@ -3,11 +3,8 @@ use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
 
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    task::JoinHandle,
-};
-use tracing::{debug, error, info, warn};
+use tokio::task::JoinHandle;
+use tracing::{debug, error, warn};
 
 pub struct Processor {
     message_handler: Arc<MessageHandler>,
@@ -105,10 +102,7 @@ impl Processor {
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         debug!("Starting stdin input task for agent '{}'", chat_id);
         tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            // let reader = BufReader::new(stdin);
-            // let mut lines = reader.lines();
-
+            // Initialize rustyline editor for input with history support
             let mut rustyline_editor = DefaultEditor::new()?;
 
             loop {
@@ -143,18 +137,6 @@ impl Processor {
                         break;
                     }
                 }
-
-                // if let Some(line) = lines.next_line().await? {
-                //     if !line.trim().is_empty() {
-                //         // Create and send user's message
-                //         let message = ChatMessage::new(chat_id.clone(), line);
-                //         network_manager.send_message(&message).await?;
-                //     }
-                // } else {
-                //     // EOF reached (Ctrl+D), exit cleanly
-                //     info!("Received EOF (Ctrl+D), exiting chat application");
-                //     std::process::exit(0);
-                // }
             }
             Ok(())
         })
