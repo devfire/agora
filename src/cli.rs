@@ -16,7 +16,7 @@ pub struct ChatArgs {
     #[arg(
         short = 'c',
         // long = "chat-id",
-        help = "Unique identifier for this chat",
+        help = "Unique identifier for this chat, automatically generated if not provided",
         default_value_t = Uuid::new_v4().to_string(),
         value_name = "ID"
     )]

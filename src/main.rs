@@ -6,6 +6,7 @@ mod message;
 mod message_handler;
 mod network;
 mod processor;
+pub mod key_manager;
 use crate::{
     cli::ChatArgs,
     message_handler::MessageHandler,
