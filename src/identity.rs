@@ -5,17 +5,17 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
 use x25519_dalek::{PublicKey as X25519PublicKey};
 
-struct P2PIdentity {
+pub(crate) struct Identity {
     // Identity/Authentication (from SSH key)
-    signing_key: SigningKey,
-    verifying_key: VerifyingKey,
+    pub signing_key: SigningKey,
+    pub verifying_key: VerifyingKey,
 
     // Encryption (separate, generated key)
-    x25519_private: [u8; 32],
-    x25519_public: X25519PublicKey,
+    pub x25519_private: [u8; 32],
+    pub x25519_public: X25519PublicKey,
 }
 
-impl P2PIdentity {
+impl Identity {
     fn load_ssh_ed25519_key(path: &Path) -> Result<(SigningKey, VerifyingKey)> {
         // Read the SSH private key file
         let key_data = std::fs::read_to_string(path)?;
@@ -43,7 +43,7 @@ impl P2PIdentity {
         let x25519_private: [u8; 32] = rand::random();
         let x25519_public = X25519PublicKey::from(x25519_private);
 
-        Ok(P2PIdentity {
+        Ok(Identity {
             signing_key,
             verifying_key,
             x25519_private,

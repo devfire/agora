@@ -1,6 +1,8 @@
 use clap::Parser;
-use pem::parse;
-use std::{fs, net::SocketAddr, path::{Path, PathBuf}};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 /// Command-line arguments for the AI Agent Swarm
@@ -91,7 +93,9 @@ impl ChatArgs {
 
         // Validate key file if provided
         if let Some(ref key_path) = self.key_file {
-            let expanded_path = shellexpand::tilde(key_path.to_str().unwrap()).to_string();
+            let expanded_path =
+                shellexpand::tilde(key_path.to_str().expect("Expected to find the key file"))
+                    .to_string();
             let path = Path::new(&expanded_path);
             if !path.exists() {
                 return Err(format!("Key file '{}' does not exist", path.display()));

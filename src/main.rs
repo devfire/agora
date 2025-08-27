@@ -2,18 +2,18 @@ use clap::Parser;
 
 mod cli;
 
+pub mod identity;
 mod message;
 mod message_handler;
 mod network;
 mod processor;
-pub mod key_manager;
 use crate::{
     cli::ChatArgs,
     message_handler::MessageHandler,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
 };
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use tracing::{Level, debug, error, info};
 
@@ -62,6 +62,14 @@ async fn main() -> anyhow::Result<()> {
     let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
     let processor = Processor::new(Arc::clone(&message_handler), Arc::clone(&network_manager));
+
+    let identity = if let Some(key_path) = args.key_file.as_ref() {
+        identity::Identity::new(key_path)?
+    } else {
+        // Use a default identity (for testing/demo purposes)
+        info!("No key file provided, using default identity");
+        identity::Identity::new(Path::new("~/.ssh/id_ed25519"))?
+    };
 
     // Spawn UDP message intake task
     let udp_intake_handle = processor.spawn_udp_intake_task().await;
