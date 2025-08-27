@@ -1,5 +1,6 @@
 use clap::Parser;
-use std::net::SocketAddr;
+use pem::parse;
+use std::{fs, net::SocketAddr, path::{Path, PathBuf}};
 use uuid::Uuid;
 
 /// Command-line arguments for the AI Agent Swarm
@@ -49,6 +50,15 @@ pub struct ChatArgs {
         value_name = "INTERFACE"
     )]
     pub interface: Option<String>,
+
+    /// Private key file path (optional)
+    #[arg(
+        short = 'k',
+        help = "Private key file path (optional) in Ed25519 format",
+        value_parser=clap::value_parser!(PathBuf),
+        value_name = "KEY_FILE_PATH"
+    )]
+    pub key_file: Option<PathBuf>,
 }
 
 impl ChatArgs {
@@ -79,6 +89,14 @@ impl ChatArgs {
             ));
         }
 
+        // Validate key file if provided
+        if let Some(ref key_path) = self.key_file {
+            let expanded_path = shellexpand::tilde(key_path.to_str().unwrap()).to_string();
+            let path = Path::new(&expanded_path);
+            if !path.exists() {
+                return Err(format!("Key file '{}' does not exist", path.display()));
+            }
+        }
         Ok(())
     }
 }

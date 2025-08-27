@@ -24,6 +24,16 @@ async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = ChatArgs::parse();
 
+    // Initialize tracing subscriber for logging (needed for validation errors)
+    tracing_subscriber::fmt()
+        .with_max_level(args.log_level.parse::<Level>().unwrap_or(Level::INFO))
+        // Include thread IDs only if log level is debug or trace
+        .with_thread_ids(args.log_level == "debug" || args.log_level == "trace")
+        .with_thread_names(args.log_level == "debug" || args.log_level == "trace")
+        .with_file(args.log_level == "debug" || args.log_level == "trace")
+        .with_line_number(args.log_level == "debug" || args.log_level == "trace")
+        .init();
+
     // Validate arguments
     if let Err(e) = args.validate() {
         error!("Error: {}", e);
@@ -34,15 +44,6 @@ async fn main() -> anyhow::Result<()> {
         "Starting chat '{}' with multicast address {}",
         args.chat_id, args.multicast_address
     );
-
-    // Initialize tracing subscriber for logging
-    tracing_subscriber::fmt()
-        .with_max_level(args.log_level.parse::<Level>().unwrap_or(Level::INFO))
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
-        .init();
 
     // Create network configuration
     let network_config = NetworkConfig {

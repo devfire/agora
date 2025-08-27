@@ -19,6 +19,8 @@ socket2 = "0.5"
 clap = { version = "4.0", features = ["derive"] }
 thiserror = "1.0"
 rustyline = "17.0.1"
+pem = "3.0"
+shellexpand = "3.0"
 
 [build-dependencies]
 prost-build = "0.12"
