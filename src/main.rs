@@ -5,14 +5,13 @@ mod cli;
 pub mod identity;
 mod message;
 mod message_channel;
-mod message_handler;
+
 mod network;
 mod processor;
 use crate::{
     cli::ChatArgs,
     identity::SecureIdentity,
     message_channel::MessageChannel,
-    message_handler::MessageHandler,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
 };
@@ -98,6 +97,16 @@ async fn main() -> anyhow::Result<()> {
         chat_processing_handle,
         stdin_input_handle
     )?;
+
+    // Use tokio::select! for clean shutdown
+    // tokio::select! {
+    //     result = udp_intake_handle => result??,
+    //     result = stdin_input_handle => result??,
+    //     result = chat_processing_handle => result??,
+    //     _ = tokio::signal::ctrl_c() => {
+    //         info!("Shutting down gracefully...");
+    //     }
+    // }
 
     Ok(())
 }
