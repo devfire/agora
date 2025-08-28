@@ -4,12 +4,14 @@ mod cli;
 
 pub mod identity;
 mod message;
+mod message_channel;
 mod message_handler;
 mod network;
 mod processor;
 use crate::{
     cli::ChatArgs,
     identity::SecureIdentity,
+    message_channel::MessageChannel,
     message_handler::MessageHandler,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -67,23 +69,23 @@ async fn main() -> anyhow::Result<()> {
     let network_manager =
         Arc::new(NetworkManager::new(network_config, args.chat_id.clone()).await?);
 
-    let buffer_size = 100; // Buffer up to 1000 messages
+    let buffer_size = 1000; // Buffer up to 1000 messages
 
     // Initialize message handler. This sets up the MPSC channel for inter-task communication.
-    let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
+    // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
-    let processor = Processor::new(
-        Arc::clone(&message_handler),
-        Arc::clone(&network_manager),
-        identity,
-    );
+    let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
+
+    let processor = Processor::new(Arc::clone(&network_manager), identity);
 
     // Spawn UDP message intake task
-    let udp_intake_handle = processor.spawn_udp_intake_task().await;
+    let udp_intake_handle = processor.spawn_udp_intake_task(channel).await;
     debug!("UDP message intake task spawned");
 
     // Spawn chat processing task, which handles incoming messages from the channel
-    let chat_processing_handle = processor.spawn_message_display_task(&args.chat_id).await;
+    let chat_processing_handle = processor
+        .spawn_message_display_task(receiver, &args.chat_id)
+        .await;
     debug!("Chat processing task spawned");
 
     // Spawn stdin input task to read user input and send messages

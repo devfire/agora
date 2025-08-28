@@ -1,4 +1,9 @@
-use crate::{identity::{self, SecureIdentity}, message::ChatMessage, message_handler::MessageHandler, network};
+use crate::{
+    identity::SecureIdentity,
+    message::ChatMessage,
+    message_channel::MessageChannel,
+    network,
+};
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
@@ -7,18 +12,14 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
 pub struct Processor {
-    message_handler: Arc<MessageHandler>,
+    // message_handler: Arc<MessageHandler>,
     network_manager: Arc<network::NetworkManager>,
 }
 
 impl Processor {
-    pub fn new(
-        message_handler: Arc<MessageHandler>,
-        network_manager: Arc<network::NetworkManager>,
-        identity: SecureIdentity,
-    ) -> Self {
+    pub fn new(network_manager: Arc<network::NetworkManager>, identity: SecureIdentity) -> Self {
         Self {
-            message_handler,
+            // message_handler,
             network_manager,
         }
     }
@@ -26,47 +27,49 @@ impl Processor {
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
     pub async fn spawn_message_display_task(
         &self,
+        mut receiver: tokio::sync::mpsc::Receiver<ChatMessage>,
         chat_id: &str,
     ) -> JoinHandle<anyhow::Result<()>> {
-        let message_handler = Arc::clone(&self.message_handler);
+        // let message_handler = Arc::clone(&self.message_handler);
         let chat_id = chat_id.to_string();
 
         tokio::spawn(async move {
-            loop {
-                match message_handler.receive_message().await {
-                    Ok(message) => {
-                        debug!(
-                            "Chat processing received message from '{}' with content: '{}'",
-                            message.sender_id,
-                            message.content // message.content.chars().take(50).collect::<String>()
-                        );
+            debug!("Starting chat processing task for agent '{}'", chat_id);
+            while let Some(message) = receiver.recv().await {
+                // Filter messages sent by self
+                if message.sender_id != chat_id {
+                    debug!(
+                        "Chat processing received message from '{}' with content: '{}'",
+                        message.sender_id,
+                        message.content // message.content.chars().take(50).collect::<String>()
+                    );
 
-                        // Clear the current prompt line and print the message, then re-display prompt
-                        eprint!("\r\x1b[K"); // Carriage return and clear line
-                        eprintln!("{}: {}", message.sender_id, message.content);
-                        eprint!("{} > ", chat_id); // Re-display the prompt
-                    }
-                    Err(e) => {
-                        error!("Message channel error: {}", e);
-                        bail!("Chat processing task failed: {}", e);
-                    }
+                    // Clear the current prompt line and print the message, then re-display prompt
+                    eprint!("\r\x1b[K"); // Carriage return and clear line
+                    eprintln!("{}: {}", message.sender_id, message.content);
+                    eprint!("{} > ", chat_id); // Re-display the prompt
+                } else {
+                    debug!("Ignoring self-sent message from '{}'", message.sender_id);
                 }
             }
+            Ok(())
         })
     }
 
     /// Spawn UDP message intake task for continuous message reception.
     /// This task receives messages from multicast and sends them to MPSC channel.
-    /// MessageHandler will handle the receiving end of the MPSC channel and forward messages back to channel.
+    /// spawn_message_display_task() will handle the receiving end of the MPSC channel and forward messages back to channel.
     /// Then, receive_message() will trigger the spawn_message_display_task() to print messages to console.
-    pub async fn spawn_udp_intake_task(&self) -> JoinHandle<anyhow::Result<()>> {
+    pub async fn spawn_udp_intake_task(
+        &self,
+        message_channel: MessageChannel,
+    ) -> JoinHandle<anyhow::Result<()>> {
         let network_manager = Arc::clone(&self.network_manager);
-        let message_handler = Arc::clone(&self.message_handler);
 
         tokio::spawn(async move {
             debug!(
                 "Starting UDP message intake task for agent '{}'",
-                message_handler.chat_id()
+                message_channel.chat_id()
             );
 
             loop {
@@ -79,7 +82,7 @@ impl Processor {
                         );
 
                         // Send message to MPSC channel (non-blocking)
-                        message_handler.try_send_message(message.clone())?;
+                        message_channel.sender().send(message.clone()).await?;
                     }
                     Err(network::NetworkError::DeserializationError(e)) => {
                         // Log malformed messages but continue processing
