@@ -1,4 +1,4 @@
-use crate::{identity::{self, Identity}, message::ChatMessage, message_handler::MessageHandler, network};
+use crate::{identity::{self, SecureIdentity}, message::ChatMessage, message_handler::MessageHandler, network};
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ impl Processor {
     pub fn new(
         message_handler: Arc<MessageHandler>,
         network_manager: Arc<network::NetworkManager>,
-        identity: Identity,
+        identity: SecureIdentity,
     ) -> Self {
         Self {
             message_handler,

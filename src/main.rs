@@ -9,6 +9,7 @@ mod network;
 mod processor;
 use crate::{
     cli::ChatArgs,
+    identity::SecureIdentity,
     message_handler::MessageHandler,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -53,6 +54,14 @@ async fn main() -> anyhow::Result<()> {
         buffer_size: 65536, // 64KB buffer for better performance
     };
 
+    let identity = if let Some(key_path) = args.key_file.as_ref() {
+        SecureIdentity::new(key_path)?
+    } else {
+        // Use a default identity (for testing/demo purposes)
+        info!("No key file provided, using default identity");
+        SecureIdentity::new(Path::new("~/.ssh/id_ed25519"))?
+    };
+
     // Initialize network manager
     let network_manager =
         Arc::new(NetworkManager::new(network_config, args.chat_id.clone()).await?);
@@ -61,15 +70,11 @@ async fn main() -> anyhow::Result<()> {
 
     let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
-    let processor = Processor::new(Arc::clone(&message_handler), Arc::clone(&network_manager));
-
-    let identity = if let Some(key_path) = args.key_file.as_ref() {
-        identity::Identity::new(key_path)?
-    } else {
-        // Use a default identity (for testing/demo purposes)
-        info!("No key file provided, using default identity");
-        identity::Identity::new(Path::new("~/.ssh/id_ed25519"))?
-    };
+    let processor = Processor::new(
+        Arc::clone(&message_handler),
+        Arc::clone(&network_manager),
+        identity,
+    );
 
     // Spawn UDP message intake task
     let udp_intake_handle = processor.spawn_udp_intake_task().await;
