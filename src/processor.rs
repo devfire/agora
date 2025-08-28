@@ -1,27 +1,20 @@
 use crate::{
-    identity::SecureIdentity,
-    message::ChatMessage,
-    message_channel::MessageChannel,
-    network,
+    identity::SecureIdentity, message::ChatMessage,  network,
 };
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
 
-use tokio::task::JoinHandle;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, error, warn};
 
 pub struct Processor {
-    // message_handler: Arc<MessageHandler>,
     network_manager: Arc<network::NetworkManager>,
 }
 
 impl Processor {
     pub fn new(network_manager: Arc<network::NetworkManager>, identity: SecureIdentity) -> Self {
-        Self {
-            // message_handler,
-            network_manager,
-        }
+        Self { network_manager }
     }
 
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
@@ -62,15 +55,14 @@ impl Processor {
     /// Then, receive_message() will trigger the spawn_message_display_task() to print messages to console.
     pub async fn spawn_udp_intake_task(
         &self,
-        message_channel: MessageChannel,
+        message_sender: mpsc::Sender<ChatMessage>,
+        chat_id: &str,
     ) -> JoinHandle<anyhow::Result<()>> {
         let network_manager = Arc::clone(&self.network_manager);
 
+        let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         tokio::spawn(async move {
-            debug!(
-                "Starting UDP message intake task for agent '{}'",
-                message_channel.chat_id()
-            );
+            debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
             loop {
                 match network_manager.receive_message().await {
@@ -81,8 +73,13 @@ impl Processor {
                             message.content // message.content.chars().take(50).collect::<String>()
                         );
 
-                        // Send message to MPSC channel (non-blocking)
-                        message_channel.sender().send(message.clone()).await?;
+                        // Filter messages sent by self
+                        if message.sender_id != chat_id {
+                            debug!("Sending message from '{}'", message.sender_id);
+                            message_sender.send(message.clone()).await?;
+                        } else {
+                            debug!("Ignoring self-sent message from '{}'", message.sender_id);
+                        }
                     }
                     Err(network::NetworkError::DeserializationError(e)) => {
                         // Log malformed messages but continue processing

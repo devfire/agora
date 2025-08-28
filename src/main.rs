@@ -4,14 +4,13 @@ mod cli;
 
 pub mod identity;
 mod message;
-mod message_channel;
 
 mod network;
 mod processor;
 use crate::{
     cli::ChatArgs,
     identity::SecureIdentity,
-    message_channel::MessageChannel,
+    message::ChatMessage,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
 };
@@ -73,17 +72,20 @@ async fn main() -> anyhow::Result<()> {
     // Initialize message handler. This sets up the MPSC channel for inter-task communication.
     // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
-    let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
+    // let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
+    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<ChatMessage>(buffer_size);
 
     let processor = Processor::new(Arc::clone(&network_manager), identity);
 
     // Spawn UDP message intake task
-    let udp_intake_handle = processor.spawn_udp_intake_task(channel).await;
+    let udp_intake_handle = processor
+        .spawn_udp_intake_task(message_sender, &args.chat_id)
+        .await;
     debug!("UDP message intake task spawned");
 
-    // Spawn chat processing task, which handles incoming messages from the channel
-    let chat_processing_handle = processor
-        .spawn_message_display_task(receiver, &args.chat_id)
+    // Spawn chat processing task, which displays incoming messages from the channel
+    let display_handle = processor
+        .spawn_message_display_task(message_receiver, &args.chat_id)
         .await;
     debug!("Chat processing task spawned");
 
@@ -92,11 +94,7 @@ async fn main() -> anyhow::Result<()> {
     debug!("Stdin input task spawned");
 
     // Wait for tasks to complete (they run indefinitely)
-    let _result = tokio::try_join!(
-        udp_intake_handle,
-        chat_processing_handle,
-        stdin_input_handle
-    )?;
+    let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
 
     // Use tokio::select! for clean shutdown
     // tokio::select! {
