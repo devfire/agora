@@ -3,8 +3,13 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
-use x25519_dalek::PublicKey as X25519PublicKey;
+// use x25519_dalek::PublicKey as X25519PublicKey;
 use zeroize::Zeroizing;
+
+use crypto_box::{
+    aead::{Aead, AeadCore, OsRng},
+    SalsaBox, PublicKey, SecretKey
+};
 
 pub(crate) struct SecureIdentity {
     // Identity/Authentication (from SSH key)
@@ -12,8 +17,8 @@ pub(crate) struct SecureIdentity {
     pub verifying_key: VerifyingKey,
 
     // Encryption (separate, generated key)
-    pub x25519_private: [u8; 32],
-    pub x25519_public: X25519PublicKey,
+    pub secret_key: SecretKey,
+    pub public_key: PublicKey,
 }
 
 impl SecureIdentity {
@@ -74,14 +79,14 @@ impl SecureIdentity {
             Self::load_ssh_ed25519_key(path).context("Failed to load SSH Ed25519 key")?;
 
         // Generate X25519 key pair for encryption
-        let x25519_private: [u8; 32] = rand::random();
-        let x25519_public = X25519PublicKey::from(x25519_private);
+        let secret_key= SecretKey::generate(&mut OsRng);
+        let public_key = secret_key.public_key();
 
         Ok(SecureIdentity {
             signing_key,
             verifying_key,
-            x25519_private,
-            x25519_public,
+            secret_key,
+            public_key,
         })
     }
 }
