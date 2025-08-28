@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
 use x25519_dalek::PublicKey as X25519PublicKey;
@@ -31,8 +31,17 @@ impl SecureIdentity {
             let passphrase =
                 rpassword::read_password().context("Failed to read passphrase from terminal")?;
 
-            // Use zeroizing string for security
+            // This line creates a secure wrapper around sensitive data (a passphrase)
+            // that automatically wipes the memory when it goes out of scope.
+            // The code is decrypting an encrypted SSH private key,
+            // so the passphrase contains sensitive cryptographic material that must not be left in memory after use.
+            //
+            // What it does:
+            //  1. Takes the passphrase string read from terminal input
+            //  2. Wraps it in a Zeroizing<String> type from the zeroize crate
+            //  3. When pass_z is dropped (goes out of scope), the memory containing the passphrase is automatically overwritten with zeros
             let pass_z = Zeroizing::new(passphrase);
+
             ssh_private_key
                 .decrypt(&pass_z)
                 .context("Failed to decrypt SSH private key (wrong passphrase?)")?
@@ -50,6 +59,8 @@ impl SecureIdentity {
 
         Ok((signing_key, verifying_key))
     }
+
+    /// Create a new SecureIdentity from the given SSH key path
     pub fn new(ssh_key_path: &Path) -> Result<Self> {
         let expanded_path = shellexpand::tilde(
             ssh_key_path

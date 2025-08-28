@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         buffer_size: 65536, // 64KB buffer for better performance
     };
 
+    // Load identity from SSH key file supplied or use default
     let identity = if let Some(key_path) = args.key_file.as_ref() {
         SecureIdentity::new(key_path)?
     } else {
@@ -68,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
 
     let buffer_size = 100; // Buffer up to 1000 messages
 
+    // Initialize message handler. This sets up the MPSC channel for inter-task communication.
     let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
     let processor = Processor::new(
