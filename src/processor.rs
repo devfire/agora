@@ -1,5 +1,5 @@
 use crate::{
-    identity::MyIdentity, message::ChatMessage,  network,
+    crypto::MyIdentity, message::ChatMessage,  network,
 };
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};

@@ -1,20 +1,25 @@
+use chacha20poly1305::ChaCha20Poly1305;
 use clap::Parser;
 
 mod cli;
 
 pub mod identity;
-mod message;
+
+// alias type (ChaCha20Poly1305, [u8; 32]) to SenderKey
+type SenderKey = (ChaCha20Poly1305, [u8; 32]);
 
 mod network;
 mod processor;
 mod crypto;
 use crate::{
-    cli::ChatArgs,
-    identity::MyIdentity,
-    message::ChatMessage,
-    network::{NetworkConfig, NetworkManager},
-    processor::Processor,
+    cli::ChatArgs, identity::MyIdentity, network::{NetworkConfig, NetworkManager}, processor::Processor
 };
+
+// Include the generated protobuf code
+pub mod chat_message {
+    include!(concat!(env!("OUT_DIR"), "/agora_proto.rs"));
+}
+
 use std::{path::Path, sync::Arc};
 
 use tracing::{Level, debug, error, info};
@@ -57,11 +62,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Load identity from SSH key file supplied or use default
     let identity = if let Some(key_path) = args.key_file.as_ref() {
-        MyIdentity::new(key_path)?
+        MyIdentity::new(key_path, &args.chat_id)?
     } else {
         // Use a default identity (for testing/demo purposes)
         info!("No key file provided, using default identity");
-        MyIdentity::new(Path::new("~/.ssh/id_ed25519"))?
+        MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
 
     // Initialize network manager

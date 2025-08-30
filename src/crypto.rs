@@ -1,51 +1,28 @@
-use std::collections::HashMap;
 
-use chacha20poly1305::{ChaCha20Poly1305, Key};
+use prost::Message;
+use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, Key, Nonce};
+use rand::{rngs::OsRng, RngCore};
+use anyhow::{Result, anyhow};
 
+use crate::{chat_message::PlaintextPayload, identity::MyIdentity};
 
-use crate::identity::MyIdentity;
+pub fn encrypt_message(sender_id: &str, content: &str,identity: &MyIdentity) -> Result<(Vec<u8>, Vec<u8>)> {
+    let payload = PlaintextPayload {
+        sender_id: sender_id.to_string(),
+        content: content.to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+    };
 
-/// EncryptedChat manages end-to-end encrypted communication between peers.
-/// It handles key generation, distribution, and message encryption/decryption.
+    let payload_bytes = payload.encode_to_vec();
+    let (cipher, _) = 
+        identity.
+        .get(&self.current_key_id)
+        .ok_or_else(|| anyhow!("No current sender key"))?;
 
-pub struct EncryptedChat {
-    // Our identity keypair
-    our_secret: ssh_key::PrivateKey,
-    our_public: PublicKey,
-    our_user_id: String,
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let encrypted_payload = cipher.encrypt(&nonce, payload_bytes.as_ref())?;
 
-    // Peer public keys for key distribution
-    peer_public_keys: HashMap<String, PublicKey>,
-
-    // Symmetric sender keys (what actually encrypts messages)
-    our_sender_keys: HashMap<u32, (ChaCha20Poly1305, [u8; 32])>, // cipher + raw key bytes
-    current_key_id: u32,
-    peer_sender_keys: HashMap<String, HashMap<u32, ChaCha20Poly1305>>,
-}
-
-// impl new methods for EncryptedChat
-impl EncryptedChat {
-    pub fn new(identity: MyIdentity, our_user_id: String) -> Self {
-        Self {
-            our_secret: identity.x25519_secret_key,
-            our_public: identity.public_key,
-            our_user_id,
-            peer_public_keys: HashMap::new(),
-            our_sender_keys: HashMap::new(),
-            current_key_id: 0,
-            peer_sender_keys: HashMap::new(),
-        }
-    }
-    pub fn generate_new_sender_key(&mut self) -> u32 {
-        let mut key_bytes = [0u8; 32];
-        rand::rng().fill_bytes(&mut key_bytes);
-
-        let key = Key::from_slice(&key_bytes);
-        let cipher = ChaCha20Poly1305::new(key);
-
-        self.current_key_id += 1;
-        self.our_sender_keys
-            .insert(self.current_key_id, (cipher, key_bytes));
-        self.current_key_id
-    }
+    Ok((encrypted_payload, nonce.to_vec()))
 }

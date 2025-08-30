@@ -1,11 +1,13 @@
 use std::{collections::HashMap, fs, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chacha20poly1305::ChaCha20Poly1305;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
+
+use crate::SenderKey;
 
 pub struct PeerIdentity {
     pub peer_x25519_keys: HashMap<String, X25519PublicKey>,
@@ -20,6 +22,36 @@ impl PeerIdentity {
             peer_verifying_keys: HashMap::new(),
             peer_sender_keys: HashMap::new(),
         }
+    }
+
+    pub fn add_peer_keys(
+        &mut self,
+        peer_id: String,
+        x25519_public_bytes: &[u8],
+        ed25519_public_bytes: &[u8],
+    ) -> Result<()> {
+        if x25519_public_bytes.len() != 32 {
+            return Err(anyhow!("Invalid X25519 public key length"));
+        }
+        if ed25519_public_bytes.len() != 32 {
+            return Err(anyhow!("Invalid Ed25519 public key length"));
+        }
+
+        let mut x25519_array = [0u8; 32];
+        x25519_array.copy_from_slice(x25519_public_bytes);
+        let x25519_public = X25519PublicKey::from(x25519_array);
+
+        let mut ed25519_array = [0u8; 32];
+        ed25519_array.copy_from_slice(ed25519_public_bytes);
+        let verifying_key = VerifyingKey::from_bytes(&ed25519_array)?;
+
+        self.peer_x25519_keys.insert(peer_id.clone(), x25519_public);
+        self.peer_verifying_keys.insert(peer_id, verifying_key);
+        Ok(())
+    }
+
+    pub fn get_peer_x25519_key(&self, peer_id: &str) -> Option<&X25519PublicKey> {
+        self.peer_x25519_keys.get(peer_id)
     }
 }
 
@@ -37,7 +69,9 @@ pub(crate) struct MyIdentity {
     pub user_id: String,
 
     // Symmetric sender keys (what actually encrypts messages)
-    our_sender_keys: HashMap<u32, (ChaCha20Poly1305, [u8; 32])>, // cipher + raw key bytes
+    // SenderKey is a type alias for (ChaCha20Poly1305, [u8; 32]);
+    // There's one of these per *session*, not per peer!
+    our_sender_keys: HashMap<u32, SenderKey>, // cipher + raw key bytes
     current_key_id: u32,
 }
 
@@ -80,6 +114,9 @@ impl MyIdentity {
             .context("SSH key is not Ed25519")?;
 
         let signing_key = SigningKey::from_bytes(&key_bytes.private.to_bytes());
+
+        // This is the same as PublicKey::from(&signing_key);
+        // VerifyingKey is the public key counterpart to SigningKey.
         let verifying_key = signing_key.verifying_key();
 
         Ok((signing_key, verifying_key))
@@ -113,5 +150,10 @@ impl MyIdentity {
             current_key_id: 0,
             user_id: user_id.to_string(),
         })
+    }
+
+    // return a SenderKey for that specific peer
+    pub fn get_sender_key(&self, peer_id: &u32) -> Option<&SenderKey>{
+        self.our_sender_keys.get(peer_id)
     }
 }

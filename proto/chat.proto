@@ -2,19 +2,12 @@
 // Agora Protocol Buffer Definitions
 //
 // This file defines the complete message structure for Secure Group Chat
-// using Double-Ratchet encryption over UDP multicast.
 //
 // Protocol Features:
-// - Forward secrecy via key advancement (double ratchet)
-// - End-to-end encryption with PFS (Perfect Forward Secrecy)
+// - End-to-end encryption with no PFS (Perfect Forward Secrecy NOT implemented)
+// - No double ratchet (yet)
 // - Decentralized key distribution
 // - Group messaging without central authority
-//
-// Security Properties:
-// - Forward Secrecy: Compromised current key doesn't expose future messages
-// - Post-Compromise Security: Communication recovers from key compromise
-// - Authentication: Digital signatures prove message origin
-// - Confidentiality: AEAD encryption prevents eavesdropping
 //
 // Generated Rust Code:
 // - Uses prost crate for serialization/deserialization
@@ -61,12 +54,10 @@ message PublicKeyAnnouncement {
 }
 
 // =============================================================================
-// DOUBLE RATCHET KEY MANAGEMENT
+// SENDER KEY MANAGEMENT
 // =============================================================================
 
 // KeyDistribution: Distributes ephemeral sender keys encrypted for specific recipients
-// Implements the "key advancement" step of the Double Ratchet algorithm
-// Provides Forward Secrecy by advancing the ratchet with each new key
 message KeyDistribution {
   // User generating and distributing this key
   string sender_id = 1;
@@ -75,7 +66,7 @@ message KeyDistribution {
   // Incrementing counter that advances for each new key in the chain
   uint32 key_id = 2;
 
-  // Symmetric ratchet key encrypted with recipient's public key
+  // Symmetric key encrypted with recipient's public key
   // Only intended recipient can decrypt and use this key
   bytes encrypted_sender_key = 3;
 
@@ -98,7 +89,7 @@ message EncryptedMessage {
   // Recipients must have received corresponding KeyDistribution
   uint32 key_id = 2;
 
-  // PlaintextPayload encrypted with ratchet key
+  // PlaintextPayload encrypted with sender key
   // Uses authenticated encryption: AES-GCM or ChaCha20-Poly1305 recommended
   bytes encrypted_payload = 3;
 
