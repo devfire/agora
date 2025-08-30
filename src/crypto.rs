@@ -1,0 +1,51 @@
+use std::collections::HashMap;
+
+use chacha20poly1305::{ChaCha20Poly1305, Key};
+
+
+use crate::identity::MyIdentity;
+
+/// EncryptedChat manages end-to-end encrypted communication between peers.
+/// It handles key generation, distribution, and message encryption/decryption.
+
+pub struct EncryptedChat {
+    // Our identity keypair
+    our_secret: ssh_key::PrivateKey,
+    our_public: PublicKey,
+    our_user_id: String,
+
+    // Peer public keys for key distribution
+    peer_public_keys: HashMap<String, PublicKey>,
+
+    // Symmetric sender keys (what actually encrypts messages)
+    our_sender_keys: HashMap<u32, (ChaCha20Poly1305, [u8; 32])>, // cipher + raw key bytes
+    current_key_id: u32,
+    peer_sender_keys: HashMap<String, HashMap<u32, ChaCha20Poly1305>>,
+}
+
+// impl new methods for EncryptedChat
+impl EncryptedChat {
+    pub fn new(identity: MyIdentity, our_user_id: String) -> Self {
+        Self {
+            our_secret: identity.x25519_secret_key,
+            our_public: identity.public_key,
+            our_user_id,
+            peer_public_keys: HashMap::new(),
+            our_sender_keys: HashMap::new(),
+            current_key_id: 0,
+            peer_sender_keys: HashMap::new(),
+        }
+    }
+    pub fn generate_new_sender_key(&mut self) -> u32 {
+        let mut key_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut key_bytes);
+
+        let key = Key::from_slice(&key_bytes);
+        let cipher = ChaCha20Poly1305::new(key);
+
+        self.current_key_id += 1;
+        self.our_sender_keys
+            .insert(self.current_key_id, (cipher, key_bytes));
+        self.current_key_id
+    }
+}

@@ -7,9 +7,10 @@ mod message;
 
 mod network;
 mod processor;
+mod crypto;
 use crate::{
     cli::ChatArgs,
-    identity::SecureIdentity,
+    identity::MyIdentity,
     message::ChatMessage,
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -56,11 +57,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Load identity from SSH key file supplied or use default
     let identity = if let Some(key_path) = args.key_file.as_ref() {
-        SecureIdentity::new(key_path)?
+        MyIdentity::new(key_path)?
     } else {
         // Use a default identity (for testing/demo purposes)
         info!("No key file provided, using default identity");
-        SecureIdentity::new(Path::new("~/.ssh/id_ed25519"))?
+        MyIdentity::new(Path::new("~/.ssh/id_ed25519"))?
     };
 
     // Initialize network manager

@@ -1,5 +1,5 @@
 use crate::{
-    identity::SecureIdentity, message::ChatMessage,  network,
+    identity::MyIdentity, message::ChatMessage,  network,
 };
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -13,7 +13,7 @@ pub struct Processor {
 }
 
 impl Processor {
-    pub fn new(network_manager: Arc<network::NetworkManager>, identity: SecureIdentity) -> Self {
+    pub fn new(network_manager: Arc<network::NetworkManager>, identity: MyIdentity) -> Self {
         Self { network_manager }
     }
 

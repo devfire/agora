@@ -58,6 +58,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chacha20poly1305",
  "clap",
  "crypto_box",
  "ed25519-dalek",
@@ -319,6 +320,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chacha20poly1305"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
+ "zeroize",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -429,6 +443,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16182b4f39a82ec8a6851155cc4c0cda3065bb1db33651726a29e1951de0f009"
 dependencies = [
  "aead",
+ "chacha20",
  "crypto_secretbox",
  "curve25519-dalek",
  "salsa20",
@@ -443,6 +458,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d6cf87adf719ddf43a805e92c6870a531aedda35ff640442cbaf8674e141e1"
 dependencies = [
  "aead",
+ "chacha20",
  "cipher",
  "generic-array",
  "poly1305",

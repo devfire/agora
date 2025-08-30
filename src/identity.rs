@@ -1,27 +1,47 @@
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::{Context, Result};
+use chacha20poly1305::ChaCha20Poly1305;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
-// use x25519_dalek::PublicKey as X25519PublicKey;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crypto_box::{
-    aead::{Aead, AeadCore, OsRng},
-    SalsaBox, PublicKey, SecretKey
-};
+pub struct PeerIdentity {
+    pub peer_x25519_keys: HashMap<String, X25519PublicKey>,
+    pub peer_verifying_keys: HashMap<String, VerifyingKey>,
+    pub peer_sender_keys: HashMap<String, HashMap<u32, ChaCha20Poly1305>>,
+}
 
-pub(crate) struct SecureIdentity {
-    // Identity/Authentication (from SSH key)
+impl PeerIdentity {
+    pub fn new() -> Self {
+        Self {
+            peer_x25519_keys: HashMap::new(),
+            peer_verifying_keys: HashMap::new(),
+            peer_sender_keys: HashMap::new(),
+        }
+    }
+}
+
+/// SecureIdentity manages our cryptographic identity using an Ed25519 SSH key for signing
+/// and a derived X25519 key for encryption.
+/// It handles loading the SSH key, decrypting if necessary, and converting to X25519
+pub(crate) struct MyIdentity {
+    // Our Ed25519 identity (for signatures/verification from the SSH key)
     pub signing_key: SigningKey,
     pub verifying_key: VerifyingKey,
 
     // Encryption (separate, generated key)
-    pub secret_key: SecretKey,
-    pub public_key: PublicKey,
+    pub x25519_secret_key: StaticSecret,
+    pub x25519_public_key: X25519PublicKey,
+    pub user_id: String,
+
+    // Symmetric sender keys (what actually encrypts messages)
+    our_sender_keys: HashMap<u32, (ChaCha20Poly1305, [u8; 32])>, // cipher + raw key bytes
+    current_key_id: u32,
 }
 
-impl SecureIdentity {
+impl MyIdentity {
     /// Load an Ed25519 SSH private key from the specified path
     fn load_ssh_ed25519_key(path: &Path) -> Result<(SigningKey, VerifyingKey)> {
         // Read the SSH private key file
@@ -66,7 +86,7 @@ impl SecureIdentity {
     }
 
     /// Create a new SecureIdentity from the given SSH key path
-    pub fn new(ssh_key_path: &Path) -> Result<Self> {
+    pub fn new(ssh_key_path: &Path, user_id: &str) -> Result<Self> {
         let expanded_path = shellexpand::tilde(
             ssh_key_path
                 .to_str()
@@ -78,15 +98,20 @@ impl SecureIdentity {
         let (signing_key, verifying_key) =
             Self::load_ssh_ed25519_key(path).context("Failed to load SSH Ed25519 key")?;
 
-        // Generate X25519 key pair for encryption
-        let secret_key= SecretKey::generate(&mut OsRng);
-        let public_key = secret_key.public_key();
+        // Convert Ed25519 secret key to X25519 for ECDH
+        // This is a standard conversion using the same key material
+        let ed25519_secret_bytes = signing_key.to_bytes();
+        let x25519_secret_key = StaticSecret::from(ed25519_secret_bytes);
+        let x25519_public_key = X25519PublicKey::from(&x25519_secret_key);
 
-        Ok(SecureIdentity {
+        Ok(MyIdentity {
             signing_key,
             verifying_key,
-            secret_key,
-            public_key,
+            x25519_secret_key,
+            x25519_public_key,
+            our_sender_keys: HashMap::new(),
+            current_key_id: 0,
+            user_id: user_id.to_string(),
         })
     }
 }

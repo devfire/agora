@@ -9,19 +9,6 @@ pub mod chat_message {
 pub use chat_message::ChatMessage;
 
 impl ChatMessage {
-    /// Create a new ChatMessage with the current timestamp
-    pub fn new(sender_id: String, content: String) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Failed to get current time")
-            .as_secs() as i64;
-
-        Self {
-            sender_id,
-            timestamp,
-            content,
-        }
-    }
 
     /// Serialize the message to bytes using protobuf
     pub fn serialize(&self) -> Result<Vec<u8>, prost::EncodeError> {
