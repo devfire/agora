@@ -1,10 +1,12 @@
 use crate::{
-    chat_message::{chat_packet::{self, PacketType}, EncryptedMessage}, crypto::encrypt_message, identity::{self, MyIdentity}, ChatPacket
+    ChatPacket,
+    chat_message::{EncryptedMessage, PlaintextPayload, chat_packet::PacketType},
+    crypto::{decrypt_message, encrypt_message},
+    identity::{MyIdentity, PeerIdentity},
 };
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing_subscriber::layer::Identity;
 
 use tokio::net::UdpSocket;
 
@@ -144,7 +146,11 @@ impl NetworkManager {
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(&self, identity: &MyIdentity) -> Result<ChatPacket> {
+    pub async fn receive_message(
+        &self,
+        my_identity: &MyIdentity,
+        peer_identity: &PeerIdentity,
+    ) -> Result<PlaintextPayload> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
@@ -153,7 +159,7 @@ impl NetworkManager {
 
         match packet.packet_type {
             Some(PacketType::PublicKey(announcement)) => {
-               todo!()
+                todo!()
             }
 
             Some(PacketType::KeyDist(key_dist)) => {
@@ -161,23 +167,25 @@ impl NetworkManager {
             }
 
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                if encrypted_msg.sender_id != identity.my_sender_id {
+                if encrypted_msg.sender_id != my_identity.my_sender_id {
                     match decrypt_message(
                         &encrypted_msg.sender_id,
                         encrypted_msg.key_id,
                         &encrypted_msg.encrypted_payload,
                         &encrypted_msg.nonce,
+                        &peer_identity,
                     ) {
-                        Ok(content) => {
-                            println!("{}: {}", encrypted_msg.sender_id, content);
-                        }
+                        Ok(payload) => Ok(payload),
                         Err(_) => {
-                            println!(
+                            bail!(
                                 "(encrypted message from {} - no key)",
                                 encrypted_msg.sender_id
                             );
                         }
                     }
+                } else {
+                    // Ignore messages sent by self
+                    Err(anyhow!("Ignoring self-sent message"))
                 }
             }
             None => todo!(),

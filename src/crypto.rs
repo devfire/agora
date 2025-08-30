@@ -39,7 +39,7 @@ pub fn decrypt_message(
     encrypted_payload: &[u8],
     nonce_bytes: &[u8],
     peer_identity: &PeerIdentity,
-) -> Result<String> {
+) -> Result<PlaintextPayload> {
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_id)
@@ -58,5 +58,5 @@ pub fn decrypt_message(
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
     let payload = PlaintextPayload::decode(decrypted_bytes.as_slice())?;
-    Ok(payload.content)
+    Ok(payload)
 }
