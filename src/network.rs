@@ -1,34 +1,14 @@
-use crate::message::ChatMessage;
+use crate::{
+    chat_message::{chat_packet::{self, PacketType}, EncryptedMessage}, crypto::encrypt_message, identity::{self, MyIdentity}, ChatPacket
+};
+use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr};
+use tracing_subscriber::layer::Identity;
 
-use thiserror::Error;
 use tokio::net::UdpSocket;
 
-/// Network-related error types
-#[derive(Error, Debug)]
-pub enum NetworkError {
-    #[error("Failed to create socket: {0}")]
-    SocketCreation(#[from] std::io::Error),
-
-    #[error("Failed to join multicast group: {0}")]
-    MulticastJoin(String),
-
-    #[error("Failed to send message: {0}")]
-    SendError(String),
-
-    #[error("Failed to receive message: {0}")]
-    ReceiveError(String),
-
-    #[error("Message serialization error: {0}")]
-    SerializationError(#[from] prost::EncodeError),
-
-    #[error("Message deserialization error: {0}")]
-    DeserializationError(#[from] prost::DecodeError),
-
-    #[error("Invalid network configuration: {0}")]
-    ConfigError(String),
-}
+use anyhow::{Result, anyhow, bail};
 
 /// Configuration for network operations
 #[derive(Debug, Clone)]
@@ -41,7 +21,7 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            multicast_address: "239.255.255.250:8080".parse().unwrap(),
+            multicast_address: "239.255.255.250:8080".parse().unwrap(), // unwrap ok because this will never fail
             interface: None,
             buffer_size: 65536, // 64KB buffer
         }
@@ -58,13 +38,13 @@ pub struct NetworkManager {
 
 impl NetworkManager {
     /// Create a new NetworkManager with the specified configuration
-    pub async fn new(config: NetworkConfig, agent_id: String) -> Result<Self, NetworkError> {
+    pub async fn new(config: NetworkConfig, agent_id: String) -> Result<Self> {
         // Validate multicast address
         if !config.multicast_address.ip().is_multicast() {
-            return Err(NetworkError::ConfigError(format!(
+            bail!(
                 "Address {} is not a valid multicast address",
                 config.multicast_address.ip()
-            )));
+            );
         }
 
         // Create the UDP socket using socket2 for advanced configuration
@@ -84,17 +64,12 @@ impl NetworkManager {
     }
 
     /// Create and configure a UDP socket for multicast operations
-    fn create_multicast_socket(
-        config: &NetworkConfig,
-    ) -> Result<std::net::UdpSocket, NetworkError> {
+    fn create_multicast_socket(config: &NetworkConfig) -> Result<std::net::UdpSocket> {
         // Create socket with socket2 for advanced configuration
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-            .map_err(NetworkError::SocketCreation)?;
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         // Enable SO_REUSEADDR to allow multiple agents on the same machine
-        socket
-            .set_reuse_address(true)
-            .map_err(NetworkError::SocketCreation)?;
+        socket.set_reuse_address(true)?;
 
         // On Unix systems, also set SO_REUSEPORT if available
         #[cfg(unix)]
@@ -109,9 +84,7 @@ impl NetworkManager {
             std::net::Ipv4Addr::UNSPECIFIED.into(),
             config.multicast_address.port(),
         );
-        socket
-            .bind(&bind_addr.into())
-            .map_err(NetworkError::SocketCreation)?;
+        socket.bind(&bind_addr.into())?;
 
         // Join the multicast group
         if let SocketAddr::V4(multicast_v4) = config.multicast_address {
@@ -127,17 +100,7 @@ impl NetworkManager {
                 Ipv4Addr::UNSPECIFIED
             };
 
-            socket
-                .join_multicast_v4(&multicast_ip, &interface_ip)
-                .map_err(|e| {
-                    NetworkError::MulticastJoin(format!(
-                        "Failed to join multicast group {}:{} on interface {}: {}",
-                        multicast_ip,
-                        multicast_v4.port(),
-                        interface_ip,
-                        e
-                    ))
-                })?;
+            socket.join_multicast_v4(&multicast_ip, &interface_ip)?;
 
             tracing::debug!(
                 "Joined multicast group {}:{} on interface {}",
@@ -146,91 +109,78 @@ impl NetworkManager {
                 interface_ip
             );
         } else {
-            return Err(NetworkError::ConfigError(
-                "IPv6 multicast not currently supported".to_string(),
-            ));
+            bail!("IPv6 multicast not currently supported".to_string(),);
         }
 
         // Set socket to non-blocking mode for tokio compatibility
-        socket
-            .set_nonblocking(true)
-            .map_err(NetworkError::SocketCreation)?;
+        socket.set_nonblocking(true)?;
 
         // Convert to std::net::UdpSocket
         Ok(socket.into())
     }
 
     /// Send a message to the multicast group
-    pub async fn send_message(&self, message: &ChatMessage) -> Result<(), NetworkError> {
-        // Serialize the message using protobuf
-        let serialized = message
-            .serialize()
-            .map_err(NetworkError::SerializationError)?;
+    pub async fn send_message(&self, identity: &MyIdentity, content: &str) -> Result<()> {
+        let (encrypted_payload, nonce) = encrypt_message(content, &identity)?;
 
-        // Send the serialized message to the multicast address
-        match self.socket.send_to(&serialized, self.multicast_addr).await {
-            Ok(bytes_sent) => {
-                tracing::debug!(
-                    "Sent {} bytes to multicast group {} from agent {}",
-                    bytes_sent,
-                    self.multicast_addr,
-                    self.agent_id
-                );
-                Ok(())
-            }
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to send message from agent {} to {}: {}",
-                    self.agent_id, self.multicast_addr, e
-                );
-                tracing::error!("{}", error_msg);
-                Err(NetworkError::SendError(error_msg))
-            }
-        }
+        let encrypted_msg = EncryptedMessage {
+            sender_id: identity.my_sender_id.to_string(),
+            key_id: identity.current_key_id,
+            encrypted_payload,
+            nonce,
+        };
+
+        let packet = ChatPacket {
+            packet_type: Some(PacketType::EncryptedMsg(encrypted_msg)),
+        };
+
+        let packet_bytes = packet.encode_to_vec();
+        self.socket
+            .send_to(&packet_bytes, self.multicast_addr)
+            .await?;
+
+        println!("You: {}", content);
+        Ok(())
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(&self) -> Result<ChatMessage, NetworkError> {
+    pub async fn receive_message(&self, identity: &MyIdentity) -> Result<ChatPacket> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
-        match self.socket.recv_from(&mut buffer).await {
-            Ok((bytes_received, sender_addr)) => {
-                tracing::debug!(
-                    "Received {} bytes from {} on client {}",
-                    bytes_received,
-                    sender_addr,
-                    self.agent_id
-                );
+        let (len, _) = self.socket.recv_from(&mut buffer).await?;
 
-                // Trim buffer to actual message size
-                buffer.truncate(bytes_received);
+        let packet = ChatPacket::decode(&buffer[..len])?;
 
-                // Deserialize the message
-                match ChatMessage::deserialize(&buffer) {
-                    Ok(message) => {
-                        tracing::debug!(
-                            "Successfully deserialized message from client {} with content: '{}'",
-                            message.sender_id,
-                            message.content.chars().take(50).collect::<String>()
-                        );
-                        Ok(message)
-                    }
-                    Err(e) => {
-                        let error_msg =
-                            format!("Failed to deserialize message from {}: {}", sender_addr, e);
-                        tracing::warn!("{}", error_msg);
-                        Err(NetworkError::DeserializationError(e))
+        match packet.packet_type {
+            Some(PacketType::PublicKey(announcement)) => {
+               todo!()
+            }
+
+            Some(PacketType::KeyDist(key_dist)) => {
+                todo!()
+            }
+
+            Some(PacketType::EncryptedMsg(encrypted_msg)) => {
+                if encrypted_msg.sender_id != identity.my_sender_id {
+                    match decrypt_message(
+                        &encrypted_msg.sender_id,
+                        encrypted_msg.key_id,
+                        &encrypted_msg.encrypted_payload,
+                        &encrypted_msg.nonce,
+                    ) {
+                        Ok(content) => {
+                            println!("{}: {}", encrypted_msg.sender_id, content);
+                        }
+                        Err(_) => {
+                            println!(
+                                "(encrypted message from {} - no key)",
+                                encrypted_msg.sender_id
+                            );
+                        }
                     }
                 }
             }
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to receive message on agent {}: {}",
-                    self.agent_id, e
-                );
-                tracing::error!("{}", error_msg);
-                Err(NetworkError::ReceiveError(error_msg))
-            }
+            None => todo!(),
         }
     }
 }

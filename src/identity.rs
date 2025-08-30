@@ -66,13 +66,13 @@ pub(crate) struct MyIdentity {
     // Encryption (separate, generated key)
     pub x25519_secret_key: StaticSecret,
     pub x25519_public_key: X25519PublicKey,
-    pub user_id: String,
+    pub my_sender_id: String,
 
     // Symmetric sender keys (what actually encrypts messages)
     // SenderKey is a type alias for (ChaCha20Poly1305, [u8; 32]);
     // There's one of these per *session*, not per peer!
-    our_sender_keys: HashMap<u32, SenderKey>, // cipher + raw key bytes
-    current_key_id: u32,
+    my_sender_keys: HashMap<u32, SenderKey>, // cipher + raw key bytes
+    pub current_key_id: u32,
 }
 
 impl MyIdentity {
@@ -146,14 +146,14 @@ impl MyIdentity {
             verifying_key,
             x25519_secret_key,
             x25519_public_key,
-            our_sender_keys: HashMap::new(),
+            my_sender_keys: HashMap::new(),
             current_key_id: 0,
-            user_id: user_id.to_string(),
+            my_sender_id: user_id.to_string(),
         })
     }
 
-    // return a SenderKey for that specific peer
+    /// return a SenderKey for the current session. Again, this is NOT per peer, this is per session.
     pub fn get_sender_key(&self) -> Option<&SenderKey>{
-        self.our_sender_keys.get(&self.current_key_id)
+        self.my_sender_keys.get(&self.current_key_id)
     }
 }
