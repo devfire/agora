@@ -1,8 +1,5 @@
 use crate::{
-    ChatPacket,
-    chat_message::{EncryptedMessage, PlaintextPayload, chat_packet::PacketType},
-    crypto::{decrypt_message, encrypt_message},
-    identity::{MyIdentity, PeerIdentity},
+    chat_message::{chat_packet::PacketType, EncryptedMessage, PlaintextPayload}, crypto::{decrypt_message, encrypt_message, ReceivedMessage}, identity::{MyIdentity, PeerIdentity}, ChatPacket
 };
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -123,28 +120,35 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
-        match packet.packet_type {
-            Some(PacketType::EncryptedMsg(p)) => {
-                let packet = ChatPacket {
-                    packet_type: Some(PacketType::EncryptedMsg(p)),
-                };
-
-                let packet_bytes = packet.encode_to_vec();
-                self.socket
-                    .send_to(&packet_bytes, self.multicast_addr)
-                    .await?;
+        if let Some(packet_to_send) = packet.packet_type {
+            // Serialize the packet to bytes
+            let packet_bytes = ChatPacket {
+                packet_type: Some(packet_to_send),
             }
-            Some(PacketType::PublicKey(_)) => {
-                // Allow sending public key announcements as-is
-            }
-            Some(PacketType::KeyDist(_)) => {
-                // Allow sending key distribution messages as-is
-            }
-            None => {
-                bail!("Empty packet cannot be sent");
-            }
+            .encode_to_vec();
+            self.socket
+                .send_to(&packet_bytes, self.multicast_addr)
+                .await?;
+            Ok(())
+        } else {
+            bail!("Empty packet cannot be sent");
         }
-        Ok(())
+
+        // match packet {
+        //     Some(p) => {
+        //         let packet = ChatPacket {
+        //             packet_type: Some(PacketType::EncryptedMsg(p)),
+        //         };
+
+        //         let packet_bytes = packet.encode_to_vec();
+        //         self.socket
+        //             .send_to(&packet_bytes, self.multicast_addr)
+        //             .await?;
+        //     }
+        //     None => {
+        //         bail!("Empty packet cannot be sent");
+        //     }
+        // }
     }
 
     /// Receive a single message from the multicast group
@@ -152,7 +156,7 @@ impl NetworkManager {
         &self,
         my_identity: &MyIdentity,
         peer_identity: &PeerIdentity,
-    ) -> Result<PlaintextPayload> {
+    ) -> Result<ReceivedMessage> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
@@ -177,7 +181,9 @@ impl NetworkManager {
                         &encrypted_msg.nonce,
                         &peer_identity,
                     ) {
-                        Ok(payload) => Ok(payload),
+                        Ok(payload) => {
+                            Ok(ReceivedMessage::PlaintextPayload(payload))
+                        },
                         Err(_) => {
                             bail!(
                                 "(encrypted message from {} - no key)",

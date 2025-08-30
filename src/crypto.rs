@@ -5,7 +5,17 @@ use chacha20poly1305::{
 use prost::Message;
 
 use anyhow::{Result, anyhow};
-use tracing_subscriber::field::debug;
+
+/// We can get either a ChatPacket or a decrypted PlaintextPayload
+/// This enum helps distinguish between the two types of received messages
+/// ChatPacket is for control messages (e.g., PublicKeyAnnouncement)
+/// PlaintextPayload is for regular chat messages which are outside the ChatPacket wrapper
+/// This allows the network.receive_message() to handle them appropriately
+#[derive(Debug)]
+pub enum ReceivedMessage {
+    ChatPacket(ChatPacket),
+    PlaintextPayload(PlaintextPayload),
+}
 
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType},

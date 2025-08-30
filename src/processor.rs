@@ -1,6 +1,6 @@
 use crate::{
     chat_message::PlaintextPayload,
-    crypto::create_encrypted_chat_packet,
+    crypto::{ReceivedMessage, create_encrypted_chat_packet},
     identity::{MyIdentity, PeerIdentity},
     network,
 };
@@ -88,18 +88,25 @@ impl Processor {
                     .await
                 {
                     Ok(message) => {
-                        debug!(
-                            "UDP intake received message from '{}' with content: '{}'",
-                            message.sender_id,
-                            message.content // message.content.chars().take(50).collect::<String>()
-                        );
-
-                        // Filter messages sent by self
-                        if message.sender_id != chat_id {
-                            debug!("Sending message from '{}'", message.sender_id);
-                            message_sender.send(message.clone()).await?;
-                        } else {
-                            debug!("Ignoring self-sent message from '{}'", message.sender_id);
+                        match message {
+                            ReceivedMessage::ChatPacket(packet) => {
+                                debug!("Received ChatPacket: {:?}", packet);
+                                // Handle ChatPacket if needed
+                            }
+                            ReceivedMessage::PlaintextPayload(payload) => {
+                                debug!("Received PlaintextPayload: {:?}", payload);
+                                // Forward the plaintext payload to the message display task
+                                // Filter messages sent by self
+                                if payload.sender_id != chat_id {
+                                    debug!("Forwarding message from '{}'", payload.sender_id);
+                                    message_sender.send(payload.clone()).await?;
+                                } else {
+                                    debug!(
+                                        "Ignoring self-sent message from '{}'",
+                                        payload.sender_id
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -142,7 +149,9 @@ impl Processor {
                     Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
                         let encrypted_packet_bye_bye =
                             create_encrypted_chat_packet(&mic_drop, &my_identity)?;
-                        network_manager.send_message(encrypted_packet_bye_bye).await?;
+                        network_manager
+                            .send_message(encrypted_packet_bye_bye)
+                            .await?;
                         std::process::exit(0);
                     }
 
