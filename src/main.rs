@@ -8,11 +8,15 @@ pub mod identity;
 // alias type (ChaCha20Poly1305, [u8; 32]) to SenderKey
 type SenderKey = (ChaCha20Poly1305, [u8; 32]);
 
+mod crypto;
 mod network;
 mod processor;
-mod crypto;
 use crate::{
-    cli::ChatArgs, identity::MyIdentity, network::{NetworkConfig, NetworkManager}, processor::Processor
+    chat_message::ChatPacket,
+    cli::ChatArgs,
+    identity::MyIdentity,
+    network::{NetworkConfig, NetworkManager},
+    processor::Processor,
 };
 
 // Include the generated protobuf code
@@ -79,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
     // let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
-    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<ChatMessage>(buffer_size);
+    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<ChatPacket>(buffer_size);
 
     let processor = Processor::new(Arc::clone(&network_manager), identity);
 
@@ -101,16 +105,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Wait for tasks to complete (they run indefinitely)
     let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-
-    // Use tokio::select! for clean shutdown
-    // tokio::select! {
-    //     result = udp_intake_handle => result??,
-    //     result = stdin_input_handle => result??,
-    //     result = chat_processing_handle => result??,
-    //     _ = tokio::signal::ctrl_c() => {
-    //         info!("Shutting down gracefully...");
-    //     }
-    // }
 
     Ok(())
 }
