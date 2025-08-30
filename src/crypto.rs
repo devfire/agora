@@ -5,9 +5,10 @@ use chacha20poly1305::{
 use prost::Message;
 
 use anyhow::{Result, anyhow};
+use tracing_subscriber::field::debug;
 
 use crate::{
-    chat_message::PlaintextPayload,
+    chat_message::{ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType},
     identity::{MyIdentity, PeerIdentity},
 };
 
@@ -54,9 +55,39 @@ pub fn decrypt_message(
     }
 
     let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
-    let decrypted_bytes = cipher.decrypt(nonce, encrypted_payload)
+    let decrypted_bytes = cipher
+        .decrypt(nonce, encrypted_payload)
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
     let payload = PlaintextPayload::decode(decrypted_bytes.as_slice())?;
     Ok(payload)
+}
+
+// Announce our public key to the group
+pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPacket {
+    let announcement = PublicKeyAnnouncement {
+        user_id: my_identity.my_sender_id.to_string(),
+        x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
+        ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
+    };
+
+    tracing::debug!("Creating public key announcement: {:?}", announcement);
+    ChatPacket {
+        packet_type: Some(PacketType::PublicKey(announcement)),
+    }
+}
+
+pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> Result<ChatPacket> {
+    let (encrypted_payload, nonce) = encrypt_message(content, my_identity)?;
+
+    let encrypted_msg = crate::chat_message::EncryptedMessage {
+        sender_id: my_identity.my_sender_id.to_string(),
+        key_id: my_identity.current_key_id,
+        encrypted_payload,
+        nonce,
+    };
+
+    Ok(ChatPacket {
+        packet_type: Some(PacketType::EncryptedMsg(encrypted_msg)),
+    })
 }

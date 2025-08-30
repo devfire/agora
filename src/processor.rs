@@ -1,5 +1,6 @@
 use crate::{
     chat_message::PlaintextPayload,
+    crypto::create_encrypted_chat_packet,
     identity::{MyIdentity, PeerIdentity},
     network,
 };
@@ -11,8 +12,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::debug;
 
 pub struct Processor {
-    network_manager: Arc<network::NetworkManager>,
-    my_identity: MyIdentity,
+    pub network_manager: Arc<network::NetworkManager>,
+    pub my_identity: MyIdentity,
     peer_identity: PeerIdentity,
 }
 
@@ -131,20 +132,20 @@ impl Processor {
                 match readline {
                     Ok(line) => {
                         rustyline_editor.add_history_entry(line.as_str())?;
-                        network_manager.send_message(&my_identity, &line).await?;
+
+                        // Create and send the chat message
+                        debug!("Stdin input read line: {}", line);
+
+                        let encrypted_packet = create_encrypted_chat_packet(&line, &my_identity)?;
+                        network_manager.send_message(encrypted_packet).await?;
                     }
-                    Err(ReadlineError::Interrupted) => {
-                        network_manager
-                            .send_message(&my_identity, &mic_drop)
-                            .await?;
+                    Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                        let encrypted_packet_bye_bye =
+                            create_encrypted_chat_packet(&mic_drop, &my_identity)?;
+                        network_manager.send_message(encrypted_packet_bye_bye).await?;
                         std::process::exit(0);
                     }
-                    Err(ReadlineError::Eof) => {
-                        network_manager
-                            .send_message(&my_identity, &mic_drop)
-                            .await?;
-                        std::process::exit(0);
-                    }
+
                     Err(err) => {
                         println!("Error: {:?}", err);
                         break;

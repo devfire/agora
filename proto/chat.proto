@@ -44,13 +44,9 @@ message ChatPacket {
 // PublicKeyAnnouncement: Announces user's long-term public key for identity verification
 // Broadcast when joining group or after key rotation
 message PublicKeyAnnouncement {
-  // Unique user identifier that owns this key
   string user_id = 1;
-
-  // Raw public key bytes:
-  // - Ed25519: 32 bytes (for signing)
-  // - X25519: 32 bytes (for encryption)
-  bytes public_key = 2;
+  bytes x25519_public_key = 2;  // 32 bytes for ECDH
+  bytes ed25519_public_key = 3; // 32 bytes for verification
 }
 
 // =============================================================================

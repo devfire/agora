@@ -14,6 +14,7 @@ mod processor;
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload},
     cli::ChatArgs,
+    crypto::create_public_key_announcement,
     identity::{MyIdentity, PeerIdentity},
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -88,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
     // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
     // let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
-    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
+    let (message_sender, message_receiver) =
+        tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
 
     let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
 
@@ -107,6 +109,20 @@ async fn main() -> anyhow::Result<()> {
     // Spawn stdin input task to read user input and send messages
     let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id).await;
     debug!("Stdin input task spawned");
+
+    // let (encrypted_payload, nonce) = crypto::encrypt_message(content, &identity)?;
+
+    // let encrypted_msg = EncryptedMessage {
+    //     sender_id: identity.my_sender_id.to_string(),
+    //     key_id: identity.current_key_id,
+    //     encrypted_payload,
+    //     nonce,
+    // };
+
+    processor
+        .network_manager
+        .send_message(create_public_key_announcement(&processor.my_identity).await)
+        .await?;
 
     // Wait for tasks to complete (they run indefinitely)
     let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;

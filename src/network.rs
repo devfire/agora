@@ -122,26 +122,28 @@ impl NetworkManager {
     }
 
     /// Send a message to the multicast group
-    pub async fn send_message(&self, identity: &MyIdentity, content: &str) -> Result<()> {
-        let (encrypted_payload, nonce) = encrypt_message(content, &identity)?;
+    pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
+        match packet.packet_type {
+            Some(PacketType::EncryptedMsg(p)) => {
+                let packet = ChatPacket {
+                    packet_type: Some(PacketType::EncryptedMsg(p)),
+                };
 
-        let encrypted_msg = EncryptedMessage {
-            sender_id: identity.my_sender_id.to_string(),
-            key_id: identity.current_key_id,
-            encrypted_payload,
-            nonce,
-        };
-
-        let packet = ChatPacket {
-            packet_type: Some(PacketType::EncryptedMsg(encrypted_msg)),
-        };
-
-        let packet_bytes = packet.encode_to_vec();
-        self.socket
-            .send_to(&packet_bytes, self.multicast_addr)
-            .await?;
-
-        println!("You: {}", content);
+                let packet_bytes = packet.encode_to_vec();
+                self.socket
+                    .send_to(&packet_bytes, self.multicast_addr)
+                    .await?;
+            }
+            Some(PacketType::PublicKey(_)) => {
+                // Allow sending public key announcements as-is
+            }
+            Some(PacketType::KeyDist(_)) => {
+                // Allow sending key distribution messages as-is
+            }
+            None => {
+                bail!("Empty packet cannot be sent");
+            }
+        }
         Ok(())
     }
 
@@ -158,11 +160,11 @@ impl NetworkManager {
         let packet = ChatPacket::decode(&buffer[..len])?;
 
         match packet.packet_type {
-            Some(PacketType::PublicKey(announcement)) => {
+            Some(PacketType::PublicKey(_announcement)) => {
                 todo!()
             }
 
-            Some(PacketType::KeyDist(key_dist)) => {
+            Some(PacketType::KeyDist(_key_dist)) => {
                 todo!()
             }
 
