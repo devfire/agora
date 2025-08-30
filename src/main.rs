@@ -12,9 +12,9 @@ mod crypto;
 mod network;
 mod processor;
 use crate::{
-    chat_message::ChatPacket,
+    chat_message::{ChatPacket, PlaintextPayload},
     cli::ChatArgs,
-    identity::MyIdentity,
+    identity::{MyIdentity, PeerIdentity},
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
 };
@@ -73,6 +73,11 @@ async fn main() -> anyhow::Result<()> {
         MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
 
+    debug!("Loaded identity with sender ID: {}", identity.my_sender_id);
+
+    // Initialize peer identity (empty for now, will be populated as we receive messages)
+    let peer_identity = PeerIdentity::new();
+
     // Initialize network manager
     let network_manager =
         Arc::new(NetworkManager::new(network_config, args.chat_id.clone()).await?);
@@ -83,9 +88,9 @@ async fn main() -> anyhow::Result<()> {
     // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
 
     // let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
-    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<ChatPacket>(buffer_size);
+    let (message_sender, message_receiver) = tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
 
-    let processor = Processor::new(Arc::clone(&network_manager), identity);
+    let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
 
     // Spawn UDP message intake task
     let udp_intake_handle = processor

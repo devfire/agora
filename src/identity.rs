@@ -8,7 +8,7 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
 use crate::SenderKey;
-
+#[derive(Clone)]
 pub struct PeerIdentity {
     pub peer_x25519_keys: HashMap<String, X25519PublicKey>,
     pub peer_verifying_keys: HashMap<String, VerifyingKey>,
@@ -58,6 +58,7 @@ impl PeerIdentity {
 /// SecureIdentity manages our cryptographic identity using an Ed25519 SSH key for signing
 /// and a derived X25519 key for encryption.
 /// It handles loading the SSH key, decrypting if necessary, and converting to X25519
+#[derive(Clone)]
 pub(crate) struct MyIdentity {
     // Our Ed25519 identity (for signatures/verification from the SSH key)
     pub signing_key: SigningKey,
