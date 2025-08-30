@@ -153,7 +153,7 @@ impl MyIdentity {
     }
 
     // return a SenderKey for that specific peer
-    pub fn get_sender_key(&self, peer_id: &u32) -> Option<&SenderKey>{
-        self.our_sender_keys.get(peer_id)
+    pub fn get_sender_key(&self) -> Option<&SenderKey>{
+        self.our_sender_keys.get(&self.current_key_id)
     }
 }
