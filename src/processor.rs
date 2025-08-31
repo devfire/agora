@@ -6,9 +6,9 @@ use crate::{
 };
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, thread::JoinHandle};
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 pub struct Processor {
@@ -35,7 +35,7 @@ impl Processor {
         &self,
         mut receiver: tokio::sync::mpsc::Receiver<PlaintextPayload>,
         chat_id: &str,
-    ) -> JoinHandle<anyhow::Result<()>> {
+    ) -> tokio::task::JoinHandle<()> {
         // let message_handler = Arc::clone(&self.message_handler);
         let chat_id = chat_id.to_string();
 
@@ -61,7 +61,6 @@ impl Processor {
                     debug!("Ignoring self-sent message from '{}'", message.sender_id);
                 }
             }
-            Ok(())
         })
     }
 
@@ -73,7 +72,7 @@ impl Processor {
         &self,
         message_sender: mpsc::Sender<PlaintextPayload>,
         chat_id: &str,
-    ) -> JoinHandle<anyhow::Result<()>> {
+    ) -> tokio::task::JoinHandle<()> {
         let network_manager = Arc::clone(&self.network_manager);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
@@ -99,11 +98,13 @@ impl Processor {
                                         );
                                         // Add peer keys to peer identity
                                         // TODO: Filter out self-sent announcements
-                                        peer_identity.add_peer_keys(
-                                            announcement.user_id.clone(),
-                                            &announcement.x25519_public_key,
-                                            &announcement.ed25519_public_key,
-                                        )?;
+                                        peer_identity
+                                            .add_peer_keys(
+                                                announcement.user_id.clone(),
+                                                &announcement.x25519_public_key,
+                                                &announcement.ed25519_public_key,
+                                            )
+                                            .expect("Failed to add peer keys");
 
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
@@ -113,7 +114,8 @@ impl Processor {
                                                 &announcement.user_id
                                             ),
                                             timestamp: std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)?
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .expect("Getting time failed")
                                                 .as_secs(),
                                         };
                                         // Forward the announcement to the message display task
@@ -122,7 +124,10 @@ impl Processor {
                                                 "Forwarding announcement from '{}'",
                                                 payload.sender_id
                                             );
-                                            message_sender.send(payload).await?;
+                                            message_sender
+                                                .send(payload)
+                                                .await
+                                                .expect("Failed to send message");
                                         } else {
                                             debug!(
                                                 "Ignoring self-sent announcement from '{}'",
@@ -146,7 +151,10 @@ impl Processor {
                                 // Filter messages sent by self
                                 if payload.sender_id != chat_id {
                                     debug!("Forwarding message from '{}'", payload.sender_id);
-                                    message_sender.send(payload.clone()).await?;
+                                    message_sender
+                                        .send(payload.clone())
+                                        .await
+                                        .expect("Failed to send message");
                                 } else {
                                     debug!(
                                         "Ignoring self-sent message from '{}'",
@@ -171,7 +179,7 @@ impl Processor {
                     }
                     Err(e) => {
                         error!("Error receiving message: {}", e);
-                        bail!("UDP intake task failed: {}", e);
+                        // bail!("UDP intake task failed: {}", e);
                     }
                 }
             }
@@ -180,7 +188,7 @@ impl Processor {
 
     /// Spawn a task to handle user input from stdin.
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
-    pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> JoinHandle<anyhow::Result<()>> {
+    pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {
         let network_manager = Arc::clone(&self.network_manager);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
@@ -188,7 +196,7 @@ impl Processor {
         debug!("Starting stdin input task for agent '{}'", chat_id);
         tokio::spawn(async move {
             // Initialize rustyline editor for input with history support
-            let mut rustyline_editor = DefaultEditor::new()?;
+            let mut rustyline_editor = DefaultEditor::new().expect("Editor initialization failed");
 
             // Message to send when user exits
             let mic_drop = "User has left the chat.".to_string();
@@ -199,20 +207,28 @@ impl Processor {
 
                 match readline {
                     Ok(line) => {
-                        rustyline_editor.add_history_entry(line.as_str())?;
+                        rustyline_editor
+                            .add_history_entry(line.as_str())
+                            .expect("Adding to history failed");
 
                         // Create and send the chat message
                         debug!("Stdin input read line: {}", line);
 
-                        let encrypted_packet = create_encrypted_chat_packet(&line, &my_identity)?;
-                        network_manager.send_message(encrypted_packet).await?;
+                        let encrypted_packet = create_encrypted_chat_packet(&line, &my_identity)
+                            .expect("Creating encrypted packet failed");
+                        network_manager
+                            .send_message(encrypted_packet)
+                            .await
+                            .expect("Sending message failed");
                     }
                     Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
                         let encrypted_packet_bye_bye =
-                            create_encrypted_chat_packet(&mic_drop, &my_identity)?;
+                            create_encrypted_chat_packet(&mic_drop, &my_identity)
+                                .expect("Creating encrypted packet failed");
                         network_manager
                             .send_message(encrypted_packet_bye_bye)
-                            .await?;
+                            .await
+                            .expect("msg send failed");
                         std::process::exit(0);
                     }
 
@@ -222,7 +238,6 @@ impl Processor {
                     }
                 }
             }
-            Ok(())
         })
     }
 }

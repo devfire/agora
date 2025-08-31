@@ -94,19 +94,15 @@ async fn main() -> anyhow::Result<()> {
     let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
 
     // Spawn UDP message intake task
-    let udp_intake_handle = processor
-        .spawn_udp_intake_task(message_sender, &args.chat_id)
-        .await;
+    let udp_intake_handle = processor.spawn_udp_intake_task(message_sender, &args.chat_id);
     debug!("UDP message intake task spawned");
 
     // Spawn chat processing task, which displays incoming messages from the channel
-    let display_handle = processor
-        .spawn_message_display_task(message_receiver, &args.chat_id)
-        .await;
+    let display_handle = processor.spawn_message_display_task(message_receiver, &args.chat_id);
     debug!("Chat processing task spawned");
 
     // Spawn stdin input task to read user input and send messages
-    let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id).await;
+    let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id);
     debug!("Stdin input task spawned");
 
     // let (encrypted_payload, nonce) = crypto::encrypt_message(content, &identity)?;
@@ -125,9 +121,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Wait for tasks to complete (they run indefinitely)
     // let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-    let (udp_result, display_result, stdin_result) = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-    udp_result?;
-    display_result?;
-    stdin_result?;
+    tokio::join!(udp_intake_handle, display_handle, stdin_input_handle);
     Ok(())
 }
