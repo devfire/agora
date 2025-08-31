@@ -4,9 +4,9 @@ use crate::{
     identity::{MyIdentity, PeerIdentity},
     network,
 };
-use anyhow::bail;
+
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::{collections::HashMap, sync::Arc, thread::JoinHandle};
+use std::{collections::HashMap, sync::Arc};
 use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
@@ -99,19 +99,21 @@ impl Processor {
                                             announcement.user_id
                                         );
 
-                                        // Use the ConstantTimeEq trait to perform the comparison.
-                                        // This function is specifically designed to take the same amount of time regardless of whether the keys match,
-                                        // or where the first difference is.
+                                        // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
+                                        // Since we are comparing cryptographic key material, it's crucial to avoid any timing discrepancies that could leak information about the key.
+                                        // A standard equality check (==) is not safe for this purpose because it "short-circuits"—it returns false as soon as it finds a mismatch.
+                                        // An attacker could potentially measure the tiny differences in comparison time to guess the key's value byte by byte.
+                                        //
+                                        // The correct and secure method is to use a crate like subtle that provides constant-time cryptographic functions.
                                         let this_is_me =
-                                            self.my_identity.x25519_public_key.as_bytes().len()
+                                            my_identity.x25519_public_key.as_bytes().len()
                                                 == announcement.x25519_public_key.len()
-                                                && self
-                                                    .my_identity
+                                                && my_identity
                                                     .x25519_public_key
                                                     .as_bytes()
-                                                    .ct_eq(announcement.x25519_public_key)
+                                                    .ct_eq(&announcement.x25519_public_key)
                                                     .into();
-                                                    
+
                                         // check to see if I am the sender
                                         if this_is_me {
                                             info!("But I am '{}', ignoring.", announcement.user_id);

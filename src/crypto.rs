@@ -5,7 +5,6 @@ use chacha20poly1305::{
 use prost::Message;
 
 use anyhow::{Result, anyhow, bail};
-use tracing::debug;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages

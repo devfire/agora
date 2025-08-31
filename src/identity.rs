@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, hash::Hash, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
