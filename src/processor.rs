@@ -7,6 +7,7 @@ use crate::{
 use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::{collections::HashMap, sync::Arc, thread::JoinHandle};
+use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -97,6 +98,25 @@ impl Processor {
                                             "Received PublicKeyAnnouncement from '{}'",
                                             announcement.user_id
                                         );
+
+                                        // Use the ConstantTimeEq trait to perform the comparison.
+                                        // This function is specifically designed to take the same amount of time regardless of whether the keys match,
+                                        // or where the first difference is.
+                                        let this_is_me =
+                                            self.my_identity.x25519_public_key.as_bytes().len()
+                                                == announcement.x25519_public_key.len()
+                                                && self
+                                                    .my_identity
+                                                    .x25519_public_key
+                                                    .as_bytes()
+                                                    .ct_eq(announcement.x25519_public_key)
+                                                    .into();
+                                                    
+                                        // check to see if I am the sender
+                                        if this_is_me {
+                                            info!("But I am '{}', ignoring.", announcement.user_id);
+                                            continue;
+                                        }
                                         // Add peer keys to peer identity
                                         // TODO: Filter out self-sent announcements
                                         info!("Adding peer keys for '{}'", announcement.user_id);
