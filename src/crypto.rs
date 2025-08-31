@@ -4,7 +4,7 @@ use chacha20poly1305::{
 };
 use prost::Message;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, bail, Result};
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
@@ -49,9 +49,28 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     );
 
     // Get current sender key
-    let (cipher, _) = identity
-        .get_sender_key()
-        .ok_or_else(|| anyhow!("No current sender key"))?;
+    println!("DEBUG: About to call get_sender_key() with current_key_id: {}", identity.current_key_id);
+    let sender_key_result = identity.get_sender_key();
+    println!("DEBUG: get_sender_key() returned, checking result...");
+    
+    println!("DEBUG: About to call ok_or_else...");
+    let sender_key = sender_key_result.ok_or_else(|| {
+        println!("DEBUG: Inside ok_or_else closure, creating anyhow error");
+        anyhow!("No current sender key")
+    });
+    println!("DEBUG: ok_or_else completed, checking if Ok or Err...");
+    
+    let (cipher, _) = match sender_key {
+        Ok(key) => {
+            println!("DEBUG: Successfully got sender key");
+            key
+        }
+        Err(e) => {
+            println!("DEBUG: Error case - about to return error: {}", e);
+            return Err(e);
+        }
+    };
+    println!("DEBUG: Successfully extracted cipher from sender key");
 
     tracing::debug!("Using sender key ID {}", identity.current_key_id);
 

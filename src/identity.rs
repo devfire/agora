@@ -1,7 +1,7 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, hash::Hash, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use chacha20poly1305::ChaCha20Poly1305;
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
@@ -63,7 +63,7 @@ impl PeerIdentity {
 /// and a derived X25519 key for encryption.
 /// It handles loading the SSH key, decrypting if necessary, and converting to X25519
 #[derive(Clone)]
-pub(crate) struct MyIdentity {
+pub struct MyIdentity {
     // Our Ed25519 identity (for signatures/verification from the SSH key)
     pub signing_key: SigningKey,
     pub verifying_key: VerifyingKey,
@@ -140,6 +140,16 @@ impl MyIdentity {
         let (signing_key, verifying_key) =
             Self::load_ssh_ed25519_key(path).context("Failed to load SSH Ed25519 key")?;
 
+        // Generate initial sender key (inline for constructor)
+        let mut key_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut key_bytes);
+
+        let key = chacha20poly1305::Key::from_slice(&key_bytes);
+        let cipher = ChaCha20Poly1305::new(key);
+        
+        let current_key_id = 0; // Start with key ID 0
+        let my_sender_keys = (cipher, key_bytes);
+
         // Convert Ed25519 secret key to X25519 for ECDH
         // This is a standard conversion using the same key material
         let ed25519_secret_bytes = signing_key.to_bytes();
@@ -151,23 +161,52 @@ impl MyIdentity {
             verifying_key,
             x25519_secret_key,
             x25519_public_key,
-            my_sender_keys: HashMap::new(),
-            current_key_id: 0,
+            my_sender_keys: HashMap::from([(current_key_id, my_sender_keys)]),
+            current_key_id,
             my_sender_id: user_id.to_string(),
         })
     }
 
+    /// Generate a new sender key for the current session
+    /// This is NOT per peer, this is per session.
+    pub fn generate_new_sender_key(&mut self) -> (u32, SenderKey) {
+        let mut key_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut key_bytes);
+
+        let key = chacha20poly1305::Key::from_slice(&key_bytes);
+        let cipher = ChaCha20Poly1305::new(key);
+
+        self.current_key_id += 1;
+        // self.my_sender_keys.insert(self.current_key_id, (cipher, key_bytes));
+        (self.current_key_id, (cipher, key_bytes))
+    }
+
     /// Return a SenderKey for the current session. Again, this is NOT per peer, this is per session.
     pub fn get_sender_key(&self) -> Option<&SenderKey> {
+        println!(
+            "DEBUG: Entering get_sender_key() for key ID {}",
+            self.current_key_id
+        );
+        println!("DEBUG: HashMap has {} keys", self.my_sender_keys.len());
+
         tracing::debug!("Getting sender key for key ID {}", self.current_key_id);
+        println!("DEBUG: Passed first tracing call");
+
         if let Some(sender_key) = self.my_sender_keys.get(&self.current_key_id) {
+            println!("DEBUG: Found sender key in HashMap");
             tracing::debug!(
                 "Found existing sender key for key ID {}",
                 self.current_key_id
             );
+            println!("DEBUG: Returning Some(sender_key)");
             Some(sender_key)
         } else {
+            println!(
+                "DEBUG: No sender key found in HashMap for key ID {}",
+                self.current_key_id
+            );
             tracing::debug!("No sender key found for key ID {}", self.current_key_id);
+            println!("DEBUG: Returning None");
             None
         }
     }
