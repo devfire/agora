@@ -7,6 +7,7 @@ use crate::{
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
+use tracing::error;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use tokio::net::UdpSocket;
@@ -122,7 +123,7 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
-        tracing::debug!("Sending packet: {:?}", packet);
+        tracing::info!("Sending packet: {:?}", packet);
         if let Some(packet_to_send) = packet.packet_type {
             // Serialize the packet to bytes
             let packet_bytes = ChatPacket {
@@ -134,6 +135,7 @@ impl NetworkManager {
                 .await?;
             Ok(())
         } else {
+            error!("Attempted to send empty packet");
             bail!("Empty packet cannot be sent");
         }
     }

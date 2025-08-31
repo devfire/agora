@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use ssh_key::PrivateKey;
+use tracing::{error, info};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
@@ -31,9 +32,11 @@ impl PeerIdentity {
         ed25519_public_bytes: &[u8],
     ) -> Result<()> {
         if x25519_public_bytes.len() != 32 {
+            error!("Invalid X25519 public key length: {}", x25519_public_bytes.len());
             return Err(anyhow!("Invalid X25519 public key length"));
         }
         if ed25519_public_bytes.len() != 32 {
+            error!("Invalid Ed25519 public key length: {}", ed25519_public_bytes.len());
             return Err(anyhow!("Invalid Ed25519 public key length"));
         }
 
@@ -47,6 +50,7 @@ impl PeerIdentity {
 
         self.peer_x25519_keys.insert(peer_id.clone(), x25519_public);
         self.peer_verifying_keys.insert(peer_id, verifying_key);
+        info!("Added peer keys successfully");
         Ok(())
     }
 

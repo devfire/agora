@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let identity = if let Some(key_path) = args.key_file.as_ref() {
         MyIdentity::new(key_path, &args.chat_id)?
     } else {
-        // Use a default identity (for testing/demo purposes)
+        // Use a default identity path if none provided
         info!("No key file provided, using default identity");
         MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
@@ -84,15 +84,13 @@ async fn main() -> anyhow::Result<()> {
 
     let buffer_size = 1000; // Buffer up to 1000 messages
 
-    // Initialize message handler. This sets up the MPSC channel for inter-task communication.
-    // let message_handler = Arc::new(MessageHandler::new(args.chat_id.clone(), buffer_size));
-
-    // let (channel, receiver) = MessageChannel::new(args.chat_id.clone(), buffer_size);
     let (message_sender, message_receiver) =
         tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
 
     let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
 
+    // Note the distinct lack of .await here - we want to spawn these tasks and let them run concurrently
+    // rather than waiting for each to complete before starting the next.
     // Spawn UDP message intake task
     let udp_intake_handle = processor.spawn_udp_intake_task(message_sender, &args.chat_id);
     debug!("UDP message intake task spawned");
@@ -104,15 +102,6 @@ async fn main() -> anyhow::Result<()> {
     // Spawn stdin input task to read user input and send messages
     let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id);
     debug!("Stdin input task spawned");
-
-    // let (encrypted_payload, nonce) = crypto::encrypt_message(content, &identity)?;
-
-    // let encrypted_msg = EncryptedMessage {
-    //     sender_id: identity.my_sender_id.to_string(),
-    //     key_id: identity.current_key_id,
-    //     encrypted_payload,
-    //     nonce,
-    // };
 
     processor
         .network_manager

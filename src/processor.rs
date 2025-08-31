@@ -98,6 +98,7 @@ impl Processor {
                                         );
                                         // Add peer keys to peer identity
                                         // TODO: Filter out self-sent announcements
+                                        info!("Adding peer keys for '{}'", announcement.user_id);
                                         peer_identity
                                             .add_peer_keys(
                                                 announcement.user_id.clone(),
@@ -106,6 +107,7 @@ impl Processor {
                                             )
                                             .expect("Failed to add peer keys");
 
+                                        info!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
                                             sender_id: announcement.user_id.clone(),
