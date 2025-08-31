@@ -9,7 +9,7 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 use std::{collections::HashMap, sync::Arc};
 
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::debug;
+use tracing::{debug, error, info};
 
 pub struct Processor {
     pub network_manager: Arc<network::NetworkManager>,
@@ -78,7 +78,7 @@ impl Processor {
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         let mut peer_identity = self.peer_identity.clone();
-        let mut my_identity = self.my_identity.clone();
+        let my_identity = self.my_identity.clone();
         tokio::spawn(async move {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
@@ -93,7 +93,7 @@ impl Processor {
                                 debug!("Received ChatPacket: {:?}", packet);
                                 match packet.packet_type {
                                     Some(PacketType::PublicKey(announcement)) => {
-                                        debug!(
+                                        info!(
                                             "Received PublicKeyAnnouncement from '{}'",
                                             announcement.user_id
                                         );
@@ -135,7 +135,7 @@ impl Processor {
                                         // Handle KeyDistribution if needed
                                     }
                                     _ => {
-                                        debug!("Received other ChatPacket type");
+                                        error!("Unknown ChatPacket type received.");
                                     }
                                 }
                                 // Handle ChatPacket if needed
@@ -170,6 +170,7 @@ impl Processor {
                         }
                     }
                     Err(e) => {
+                        error!("Error receiving message: {}", e);
                         bail!("UDP intake task failed: {}", e);
                     }
                 }
@@ -216,7 +217,7 @@ impl Processor {
                     }
 
                     Err(err) => {
-                        println!("Error: {:?}", err);
+                        error!("Error: {:?}", err);
                         break;
                     }
                 }

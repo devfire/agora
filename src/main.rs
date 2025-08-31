@@ -124,7 +124,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Wait for tasks to complete (they run indefinitely)
-    let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-
+    // let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
+    let (udp_result, display_result, stdin_result) = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
+    udp_result?;
+    display_result?;
+    stdin_result?;
     Ok(())
 }

@@ -1,20 +1,13 @@
 use crate::{
     ChatPacket,
-    chat_message::{EncryptedMessage, PlaintextPayload, chat_packet::PacketType},
-    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message, encrypt_message},
+    chat_message::chat_packet::PacketType,
+    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message},
     identity::{MyIdentity, PeerIdentity},
 };
-use chacha20poly1305::{
-    AeadCore, ChaCha20Poly1305, Key, KeyInit,
-    aead::{Aead, OsRng as ChaChaOsRng},
-};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
-};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use tokio::net::UdpSocket;
 
@@ -143,22 +136,6 @@ impl NetworkManager {
         } else {
             bail!("Empty packet cannot be sent");
         }
-
-        // match packet {
-        //     Some(p) => {
-        //         let packet = ChatPacket {
-        //             packet_type: Some(PacketType::EncryptedMsg(p)),
-        //         };
-
-        //         let packet_bytes = packet.encode_to_vec();
-        //         self.socket
-        //             .send_to(&packet_bytes, self.multicast_addr)
-        //             .await?;
-        //     }
-        //     None => {
-        //         bail!("Empty packet cannot be sent");
-        //     }
-        // }
     }
 
     /// Receive a single message from the multicast group
@@ -234,65 +211,38 @@ impl NetworkManager {
 
                 // Return the sender key to the processor for updating peer_identity
                 return Ok(peer_sender_key);
-
-                // peer_identity
-                //     .peer_sender_keys
-                //     .entry(key_dist.recipient_id.to_string())
-                //     .or_insert_with(HashMap::new)
-                //     .insert(key_dist.key_id, sender_cipher);
-                // match decrypt_message(
-                //     &key_dist.sender_id,
-                //     key_dist.key_id,
-                //     &key_dist.encrypted_sender_key,
-                //     &[0u8; 12], // Assuming nonce is all zeros for simplicity; adjust as needed
-                //     peer_identity,
-                // ) {
-                //     Ok(decrypted_key_bytes) => {
-                //         // Add the decrypted sender key to my_identity
-                //         my_identity.add_sender_key(
-                //             key_dist.sender_id.clone(),
-                //             key_dist.key_id,
-                //             &decrypted_key_bytes,
-                //         )?;
-                //         tracing::info!(
-                //             "Added sender key from {} with key ID {}",
-                //             key_dist.sender_id,
-                //             key_dist.key_id
-                //         );
-                //         Ok(ReceivedMessage::ChatPacket(packet))
-                //     }
-                //     Err(e) => {
-                //         tracing::error!(
-                //             "Failed to decrypt sender key from {}: {}",
-                //             key_dist.sender_id,
-                //             e
-                //         );
-                //         Err(anyhow!("Failed to decrypt sender key"))
-                //     }
-                // }
-                Err(anyhow!("Ignoring self-sent message")) //fake: remove this
             }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                if encrypted_msg.sender_id != my_identity.my_sender_id {
-                    match decrypt_message(
-                        &encrypted_msg.sender_id,
-                        encrypted_msg.key_id,
-                        &encrypted_msg.encrypted_payload,
-                        &encrypted_msg.nonce,
-                        &peer_identity,
-                    ) {
-                        Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
-                        Err(_) => {
-                            bail!(
-                                "(encrypted message from {} - no key)",
-                                encrypted_msg.sender_id
-                            );
-                        }
-                    }
-                } else {
-                    // Ignore messages sent by self
-                    Err(anyhow!("Ignoring self-sent message"))
-                }
+                // Handle encrypted message
+                let plaintext = decrypt_message(
+                    &encrypted_msg.sender_id,
+                    encrypted_msg.key_id,
+                    &encrypted_msg.encrypted_payload,
+                    &encrypted_msg.nonce,
+                    &peer_identity,
+                )?;
+                Ok(ReceivedMessage::PlaintextPayload(plaintext))
+
+                // if encrypted_msg.sender_id != my_identity.my_sender_id {
+                //     match decrypt_message(
+                //         &encrypted_msg.sender_id,
+                //         encrypted_msg.key_id,
+                //         &encrypted_msg.encrypted_payload,
+                //         &encrypted_msg.nonce,
+                //         &peer_identity,
+                //     ) {
+                //         Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
+                //         Err(_) => {
+                //             bail!(
+                //                 "(encrypted message from {} - no key)",
+                //                 encrypted_msg.sender_id
+                //             );
+                //         }
+                //     }
+                // } else {
+                //     // Ignore messages sent by self
+                //     Err(anyhow!("Ignoring self-sent message"))
+                // }
             }
             None => todo!(),
         }

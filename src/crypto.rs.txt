@@ -267,7 +267,7 @@ impl HybridChatCrypto {
             .or_insert_with(HashMap::new)
             .insert(key_id, sender_cipher);
         
-        println!("Added sender key for {} (key_id: {})", sender_id, key_id);
+        debug!("Added sender key for {} (key_id: {})", sender_id, key_id);
         Ok(())
     }
     
@@ -364,7 +364,7 @@ impl MulticastChat {
             Ok(ssh_path) if ssh_path.exists() => {
                 match HybridChatCrypto::from_ssh_key(user_id.clone(), &ssh_path) {
                     Ok(crypto) => {
-                        println!("Loaded SSH key from {}", ssh_path.display());
+                        debug!("Loaded SSH key from {}", ssh_path.display());
                         crypto
                     }
                     Err(e) => {

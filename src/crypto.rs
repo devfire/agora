@@ -4,17 +4,22 @@ use chacha20poly1305::{
 };
 use prost::Message;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
+use tracing::debug;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
 /// ChatPacket is for control messages (e.g., PublicKeyAnnouncement)
 /// PlaintextPayload is for regular chat messages which are outside the ChatPacket wrapper
 /// This allows the network.receive_message() to handle them appropriately
+///
+/// This is needed because network.rs doesn't own peer_identity to update it directly but processor.rs does.
+/// So network.rs can pass the raw ChatPacket up to processor.rs which can then handle it properly.
+/// Otherwise if network.rs only ever returns ChatPacket, it cannot return decrypted PlaintextPayload messages. And others.
 pub enum ReceivedMessage {
     ChatPacket(ChatPacket),
     PlaintextPayload(PlaintextPayload),
-    PeerSenderKey(PeerSenderKey), // this is needed because network.rs doesn't own peer_identity to update it directly but processor.rs does
+    PeerSenderKey(PeerSenderKey),
 }
 
 pub struct PeerSenderKey {
@@ -48,29 +53,13 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
         payload_bytes
     );
 
-    // Get current sender key
-    println!("DEBUG: About to call get_sender_key() with current_key_id: {}", identity.current_key_id);
-    let sender_key_result = identity.get_sender_key();
-    println!("DEBUG: get_sender_key() returned, checking result...");
-    
-    println!("DEBUG: About to call ok_or_else...");
-    let sender_key = sender_key_result.ok_or_else(|| {
-        println!("DEBUG: Inside ok_or_else closure, creating anyhow error");
-        anyhow!("No current sender key")
-    });
-    println!("DEBUG: ok_or_else completed, checking if Ok or Err...");
-    
-    let (cipher, _) = match sender_key {
-        Ok(key) => {
-            println!("DEBUG: Successfully got sender key");
-            key
-        }
-        Err(e) => {
-            println!("DEBUG: Error case - about to return error: {}", e);
-            return Err(e);
-        }
-    };
-    println!("DEBUG: Successfully extracted cipher from sender key");
+    // Remember, SenderKey is a type alias for (ChaCha20Poly1305, [u8; 32]), i.e. a tuple
+    let sender_key_tuple = identity
+        .get_sender_key()
+        .ok_or_else(|| anyhow!("No current sender key"))?;
+
+    // Get the ChaCha20Poly1305 cipher from the tuple
+    let (cypher, _) = sender_key_tuple;
 
     tracing::debug!("Using sender key ID {}", identity.current_key_id);
 
@@ -79,7 +68,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     tracing::debug!("Generated nonce: {:?}", nonce);
 
     // Encrypt the payload
-    let encrypted_payload = cipher
+    let encrypted_payload = cypher
         .encrypt(&nonce, payload_bytes.as_ref())
         .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
@@ -108,7 +97,7 @@ pub fn decrypt_message(
         .ok_or_else(|| anyhow!("Unknown key ID {} for sender {}", key_id, sender_id))?;
 
     if nonce_bytes.len() != 12 {
-        return Err(anyhow!("Invalid nonce length"));
+        bail!("Invalid nonce length");
     }
 
     let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
@@ -128,7 +117,7 @@ pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPac
         ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
     };
 
-    tracing::debug!("Creating public key announcement: {:?}", announcement);
+    tracing::info!("Creating public key announcement: {:?}", announcement);
     ChatPacket {
         packet_type: Some(PacketType::PublicKey(announcement)),
     }

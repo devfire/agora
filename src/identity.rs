@@ -183,30 +183,17 @@ impl MyIdentity {
 
     /// Return a SenderKey for the current session. Again, this is NOT per peer, this is per session.
     pub fn get_sender_key(&self) -> Option<&SenderKey> {
-        println!(
-            "DEBUG: Entering get_sender_key() for key ID {}",
-            self.current_key_id
-        );
-        println!("DEBUG: HashMap has {} keys", self.my_sender_keys.len());
-
+      
         tracing::debug!("Getting sender key for key ID {}", self.current_key_id);
-        println!("DEBUG: Passed first tracing call");
-
+      
         if let Some(sender_key) = self.my_sender_keys.get(&self.current_key_id) {
-            println!("DEBUG: Found sender key in HashMap");
             tracing::debug!(
                 "Found existing sender key for key ID {}",
                 self.current_key_id
             );
-            println!("DEBUG: Returning Some(sender_key)");
             Some(sender_key)
         } else {
-            println!(
-                "DEBUG: No sender key found in HashMap for key ID {}",
-                self.current_key_id
-            );
             tracing::debug!("No sender key found for key ID {}", self.current_key_id);
-            println!("DEBUG: Returning None");
             None
         }
     }
