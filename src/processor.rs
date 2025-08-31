@@ -31,7 +31,7 @@ impl Processor {
     }
 
     /// Display task for printing messages to console. This task is READ ONLY and does not send messages.
-    pub async fn spawn_message_display_task(
+    pub fn spawn_message_display_task(
         &self,
         mut receiver: tokio::sync::mpsc::Receiver<PlaintextPayload>,
         chat_id: &str,
@@ -61,6 +61,7 @@ impl Processor {
                     debug!("Ignoring self-sent message from '{}'", message.sender_id);
                 }
             }
+            info!("Message display task ending.");
         })
     }
 
@@ -68,7 +69,7 @@ impl Processor {
     /// This task receives messages from multicast and sends them to MPSC channel.
     /// spawn_message_display_task() will handle the receiving end of the MPSC channel and forward messages back to channel.
     /// Then, receive_message() will trigger the spawn_message_display_task() to print messages to console.
-    pub async fn spawn_udp_intake_task(
+    pub fn spawn_udp_intake_task(
         &self,
         message_sender: mpsc::Sender<PlaintextPayload>,
         chat_id: &str,
@@ -107,7 +108,10 @@ impl Processor {
                                             )
                                             .expect("Failed to add peer keys");
 
-                                        info!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
+                                        info!(
+                                            "Current peers: {:?}",
+                                            peer_identity.peer_x25519_keys.keys()
+                                        );
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
                                             sender_id: announcement.user_id.clone(),
@@ -190,7 +194,7 @@ impl Processor {
 
     /// Spawn a task to handle user input from stdin.
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
-    pub async fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {
         let network_manager = Arc::clone(&self.network_manager);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
