@@ -80,8 +80,7 @@ async fn main() -> anyhow::Result<()> {
     let peer_identity = PeerIdentity::new();
 
     // Initialize network manager
-    let network_manager =
-        Arc::new(NetworkManager::new(network_config, args.chat_id.clone()).await?);
+    let network_manager = Arc::new(NetworkManager::new(network_config).await?);
 
     let buffer_size = 1000; // Buffer up to 1000 messages
 

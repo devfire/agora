@@ -53,6 +53,10 @@ impl PeerIdentity {
     pub fn get_peer_x25519_key(&self, peer_id: &str) -> Option<&X25519PublicKey> {
         self.peer_x25519_keys.get(peer_id)
     }
+
+    pub fn list_known_peers(&self) -> Vec<&String> {
+        self.peer_x25519_keys.keys().collect()
+    }
 }
 
 /// SecureIdentity manages our cryptographic identity using an Ed25519 SSH key for signing
@@ -153,8 +157,18 @@ impl MyIdentity {
         })
     }
 
-    /// return a SenderKey for the current session. Again, this is NOT per peer, this is per session.
-    pub fn get_sender_key(&self) -> Option<&SenderKey>{
-        self.my_sender_keys.get(&self.current_key_id)
+    /// Return a SenderKey for the current session. Again, this is NOT per peer, this is per session.
+    pub fn get_sender_key(&self) -> Option<&SenderKey> {
+        tracing::debug!("Getting sender key for key ID {}", self.current_key_id);
+        if let Some(sender_key) = self.my_sender_keys.get(&self.current_key_id) {
+            tracing::debug!(
+                "Found existing sender key for key ID {}",
+                self.current_key_id
+            );
+            Some(sender_key)
+        } else {
+            tracing::debug!("No sender key found for key ID {}", self.current_key_id);
+            None
+        }
     }
 }

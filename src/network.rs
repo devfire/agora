@@ -1,9 +1,20 @@
 use crate::{
-    chat_message::{chat_packet::PacketType, EncryptedMessage, PlaintextPayload}, crypto::{decrypt_message, encrypt_message, ReceivedMessage}, identity::{MyIdentity, PeerIdentity}, ChatPacket
+    ChatPacket,
+    chat_message::{EncryptedMessage, PlaintextPayload, chat_packet::PacketType},
+    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message, encrypt_message},
+    identity::{MyIdentity, PeerIdentity},
+};
+use chacha20poly1305::{
+    AeadCore, ChaCha20Poly1305, Key, KeyInit,
+    aead::{Aead, OsRng as ChaChaOsRng},
 };
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use tokio::net::UdpSocket;
 
@@ -27,17 +38,16 @@ impl Default for NetworkConfig {
     }
 }
 
-/// Manages UDP multicast networking for agent communication
+/// Manages UDP multicast networking for communicating with other chat clients
 pub struct NetworkManager {
     socket: UdpSocket,
     multicast_addr: SocketAddr,
-    agent_id: String,
     config: NetworkConfig,
 }
 
 impl NetworkManager {
     /// Create a new NetworkManager with the specified configuration
-    pub async fn new(config: NetworkConfig, agent_id: String) -> Result<Self> {
+    pub async fn new(config: NetworkConfig) -> Result<Self> {
         // Validate multicast address
         if !config.multicast_address.ip().is_multicast() {
             bail!(
@@ -55,7 +65,6 @@ impl NetworkManager {
         let manager = Self {
             socket: tokio_socket,
             multicast_addr: config.multicast_address,
-            agent_id,
             config,
         };
 
@@ -120,6 +129,7 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
+        tracing::debug!("Sending packet: {:?}", packet);
         if let Some(packet_to_send) = packet.packet_type {
             // Serialize the packet to bytes
             let packet_bytes = ChatPacket {
@@ -160,18 +170,108 @@ impl NetworkManager {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
-
+        // Deserialize the received bytes into a ChatPacket
         let packet = ChatPacket::decode(&buffer[..len])?;
 
         match packet.packet_type {
-            Some(PacketType::PublicKey(_announcement)) => {
-                todo!()
+            Some(PacketType::PublicKey(announcement)) => {
+                // Public keys are not encrypted.
+                // Return them to the processor as-is for handling.
+                let pk_packet = ChatPacket {
+                    packet_type: Some(PacketType::PublicKey(announcement)),
+                };
+                Ok(ReceivedMessage::ChatPacket(pk_packet))
             }
 
-            Some(PacketType::KeyDist(_key_dist)) => {
-                todo!()
-            }
+            Some(PacketType::KeyDist(key_dist)) => {
+                // Handle key distribution
+                // Get the other peers sender key and add to peer_identity
+                if key_dist.recipient_id != my_identity.my_sender_id {
+                    // Ignore key distributions not intended for me
+                    return Err(anyhow!("This key distribution not intended for me"));
+                }
 
+                let sender_x25519_public = peer_identity
+                    .peer_x25519_keys
+                    .get(key_dist.recipient_id.as_str())
+                    .ok_or_else(|| anyhow!("Unknown sender: {}", key_dist.recipient_id))?;
+
+                if key_dist.encrypted_sender_key.len() < 12 {
+                    return Err(anyhow!("Encrypted data too short"));
+                }
+
+                // Extract nonce and encrypted key
+                let (nonce_bytes, encrypted_key) = key_dist.encrypted_sender_key.split_at(12);
+                let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
+
+                // Perform ECDH to get shared secret
+                let shared_secret = my_identity
+                    .x25519_secret_key
+                    .diffie_hellman(sender_x25519_public);
+
+                // Use shared secret as decryption key
+                let key = chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
+                let cipher = ChaCha20Poly1305::new(key);
+
+                let decrypted_key = cipher
+                    .decrypt(nonce, encrypted_key)
+                    .map_err(|e| anyhow!("Creating the decrypted_key failed: {}", e))?;
+
+                if decrypted_key.len() != 32 {
+                    return Err(anyhow!("Invalid sender key length"));
+                }
+
+                let sender_key = Key::from_slice(&decrypted_key);
+                let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                // Construct the sender key enum and return to processor
+                let peer_sender_key: ReceivedMessage =
+                    ReceivedMessage::PeerSenderKey(PeerSenderKey {
+                        sender_key: key_dist.sender_id.clone(),
+                        key_id: key_dist.key_id,
+                        sender_cipher,
+                    });
+
+                // Return the sender key to the processor for updating peer_identity
+                return Ok(peer_sender_key);
+
+                // peer_identity
+                //     .peer_sender_keys
+                //     .entry(key_dist.recipient_id.to_string())
+                //     .or_insert_with(HashMap::new)
+                //     .insert(key_dist.key_id, sender_cipher);
+                // match decrypt_message(
+                //     &key_dist.sender_id,
+                //     key_dist.key_id,
+                //     &key_dist.encrypted_sender_key,
+                //     &[0u8; 12], // Assuming nonce is all zeros for simplicity; adjust as needed
+                //     peer_identity,
+                // ) {
+                //     Ok(decrypted_key_bytes) => {
+                //         // Add the decrypted sender key to my_identity
+                //         my_identity.add_sender_key(
+                //             key_dist.sender_id.clone(),
+                //             key_dist.key_id,
+                //             &decrypted_key_bytes,
+                //         )?;
+                //         tracing::info!(
+                //             "Added sender key from {} with key ID {}",
+                //             key_dist.sender_id,
+                //             key_dist.key_id
+                //         );
+                //         Ok(ReceivedMessage::ChatPacket(packet))
+                //     }
+                //     Err(e) => {
+                //         tracing::error!(
+                //             "Failed to decrypt sender key from {}: {}",
+                //             key_dist.sender_id,
+                //             e
+                //         );
+                //         Err(anyhow!("Failed to decrypt sender key"))
+                //     }
+                // }
+                Err(anyhow!("Ignoring self-sent message")) //fake: remove this
+            }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                 if encrypted_msg.sender_id != my_identity.my_sender_id {
                     match decrypt_message(
@@ -181,9 +281,7 @@ impl NetworkManager {
                         &encrypted_msg.nonce,
                         &peer_identity,
                     ) {
-                        Ok(payload) => {
-                            Ok(ReceivedMessage::PlaintextPayload(payload))
-                        },
+                        Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
                         Err(_) => {
                             bail!(
                                 "(encrypted message from {} - no key)",
