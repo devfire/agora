@@ -1,34 +1,18 @@
-use crate::message::ChatMessage;
+use crate::{
+    ChatPacket,
+    chat_message::chat_packet::PacketType,
+    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message},
+    identity::{MyIdentity, PeerIdentity},
+};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
+use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
+use tracing::error;
 use std::net::{Ipv4Addr, SocketAddr};
 
-use thiserror::Error;
 use tokio::net::UdpSocket;
 
-/// Network-related error types
-#[derive(Error, Debug)]
-pub enum NetworkError {
-    #[error("Failed to create socket: {0}")]
-    SocketCreation(#[from] std::io::Error),
-
-    #[error("Failed to join multicast group: {0}")]
-    MulticastJoin(String),
-
-    #[error("Failed to send message: {0}")]
-    SendError(String),
-
-    #[error("Failed to receive message: {0}")]
-    ReceiveError(String),
-
-    #[error("Message serialization error: {0}")]
-    SerializationError(#[from] prost::EncodeError),
-
-    #[error("Message deserialization error: {0}")]
-    DeserializationError(#[from] prost::DecodeError),
-
-    #[error("Invalid network configuration: {0}")]
-    ConfigError(String),
-}
+use anyhow::{Result, anyhow, bail};
 
 /// Configuration for network operations
 #[derive(Debug, Clone)]
@@ -41,30 +25,29 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            multicast_address: "239.255.255.250:8080".parse().unwrap(),
+            multicast_address: "239.255.255.250:8080".parse().unwrap(), // unwrap ok because this will never fail
             interface: None,
             buffer_size: 65536, // 64KB buffer
         }
     }
 }
 
-/// Manages UDP multicast networking for agent communication
+/// Manages UDP multicast networking for communicating with other chat clients
 pub struct NetworkManager {
     socket: UdpSocket,
     multicast_addr: SocketAddr,
-    agent_id: String,
     config: NetworkConfig,
 }
 
 impl NetworkManager {
     /// Create a new NetworkManager with the specified configuration
-    pub async fn new(config: NetworkConfig, agent_id: String) -> Result<Self, NetworkError> {
+    pub async fn new(config: NetworkConfig) -> Result<Self> {
         // Validate multicast address
         if !config.multicast_address.ip().is_multicast() {
-            return Err(NetworkError::ConfigError(format!(
+            bail!(
                 "Address {} is not a valid multicast address",
                 config.multicast_address.ip()
-            )));
+            );
         }
 
         // Create the UDP socket using socket2 for advanced configuration
@@ -76,7 +59,6 @@ impl NetworkManager {
         let manager = Self {
             socket: tokio_socket,
             multicast_addr: config.multicast_address,
-            agent_id,
             config,
         };
 
@@ -84,17 +66,12 @@ impl NetworkManager {
     }
 
     /// Create and configure a UDP socket for multicast operations
-    fn create_multicast_socket(
-        config: &NetworkConfig,
-    ) -> Result<std::net::UdpSocket, NetworkError> {
+    fn create_multicast_socket(config: &NetworkConfig) -> Result<std::net::UdpSocket> {
         // Create socket with socket2 for advanced configuration
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
-            .map_err(NetworkError::SocketCreation)?;
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         // Enable SO_REUSEADDR to allow multiple agents on the same machine
-        socket
-            .set_reuse_address(true)
-            .map_err(NetworkError::SocketCreation)?;
+        socket.set_reuse_address(true)?;
 
         // On Unix systems, also set SO_REUSEPORT if available
         #[cfg(unix)]
@@ -109,9 +86,7 @@ impl NetworkManager {
             std::net::Ipv4Addr::UNSPECIFIED.into(),
             config.multicast_address.port(),
         );
-        socket
-            .bind(&bind_addr.into())
-            .map_err(NetworkError::SocketCreation)?;
+        socket.bind(&bind_addr.into())?;
 
         // Join the multicast group
         if let SocketAddr::V4(multicast_v4) = config.multicast_address {
@@ -127,17 +102,7 @@ impl NetworkManager {
                 Ipv4Addr::UNSPECIFIED
             };
 
-            socket
-                .join_multicast_v4(&multicast_ip, &interface_ip)
-                .map_err(|e| {
-                    NetworkError::MulticastJoin(format!(
-                        "Failed to join multicast group {}:{} on interface {}: {}",
-                        multicast_ip,
-                        multicast_v4.port(),
-                        interface_ip,
-                        e
-                    ))
-                })?;
+            socket.join_multicast_v4(&multicast_ip, &interface_ip)?;
 
             tracing::debug!(
                 "Joined multicast group {}:{} on interface {}",
@@ -146,91 +111,142 @@ impl NetworkManager {
                 interface_ip
             );
         } else {
-            return Err(NetworkError::ConfigError(
-                "IPv6 multicast not currently supported".to_string(),
-            ));
+            bail!("IPv6 multicast not currently supported".to_string(),);
         }
 
         // Set socket to non-blocking mode for tokio compatibility
-        socket
-            .set_nonblocking(true)
-            .map_err(NetworkError::SocketCreation)?;
+        socket.set_nonblocking(true)?;
 
         // Convert to std::net::UdpSocket
         Ok(socket.into())
     }
 
     /// Send a message to the multicast group
-    pub async fn send_message(&self, message: &ChatMessage) -> Result<(), NetworkError> {
-        // Serialize the message using protobuf
-        let serialized = message
-            .serialize()
-            .map_err(NetworkError::SerializationError)?;
-
-        // Send the serialized message to the multicast address
-        match self.socket.send_to(&serialized, self.multicast_addr).await {
-            Ok(bytes_sent) => {
-                tracing::debug!(
-                    "Sent {} bytes to multicast group {} from agent {}",
-                    bytes_sent,
-                    self.multicast_addr,
-                    self.agent_id
-                );
-                Ok(())
+    pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
+        tracing::info!("Sending packet: {:?}", packet);
+        if let Some(packet_to_send) = packet.packet_type {
+            // Serialize the packet to bytes
+            let packet_bytes = ChatPacket {
+                packet_type: Some(packet_to_send),
             }
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to send message from agent {} to {}: {}",
-                    self.agent_id, self.multicast_addr, e
-                );
-                tracing::error!("{}", error_msg);
-                Err(NetworkError::SendError(error_msg))
-            }
+            .encode_to_vec();
+            self.socket
+                .send_to(&packet_bytes, self.multicast_addr)
+                .await?;
+            Ok(())
+        } else {
+            error!("Attempted to send empty packet");
+            bail!("Empty packet cannot be sent");
         }
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(&self) -> Result<ChatMessage, NetworkError> {
+    pub async fn receive_message(
+        &self,
+        my_identity: &MyIdentity,
+        peer_identity: &PeerIdentity,
+    ) -> Result<ReceivedMessage> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
-        match self.socket.recv_from(&mut buffer).await {
-            Ok((bytes_received, sender_addr)) => {
-                tracing::debug!(
-                    "Received {} bytes from {} on client {}",
-                    bytes_received,
-                    sender_addr,
-                    self.agent_id
-                );
+        let (len, _) = self.socket.recv_from(&mut buffer).await?;
+        // Deserialize the received bytes into a ChatPacket
+        let packet = ChatPacket::decode(&buffer[..len])?;
 
-                // Trim buffer to actual message size
-                buffer.truncate(bytes_received);
+        match packet.packet_type {
+            Some(PacketType::PublicKey(announcement)) => {
+                // Public keys are not encrypted.
+                // Return them to the processor as-is for handling.
+                let pk_packet = ChatPacket {
+                    packet_type: Some(PacketType::PublicKey(announcement)),
+                };
+                Ok(ReceivedMessage::ChatPacket(pk_packet))
+            }
 
-                // Deserialize the message
-                match ChatMessage::deserialize(&buffer) {
-                    Ok(message) => {
-                        tracing::debug!(
-                            "Successfully deserialized message from client {} with content: '{}'",
-                            message.sender_id,
-                            message.content.chars().take(50).collect::<String>()
-                        );
-                        Ok(message)
-                    }
-                    Err(e) => {
-                        let error_msg =
-                            format!("Failed to deserialize message from {}: {}", sender_addr, e);
-                        tracing::warn!("{}", error_msg);
-                        Err(NetworkError::DeserializationError(e))
-                    }
+            Some(PacketType::KeyDist(key_dist)) => {
+                // Handle key distribution
+                // Get the other peers sender key and add to peer_identity
+                if key_dist.recipient_id != my_identity.my_sender_id {
+                    // Ignore key distributions not intended for me
+                    return Err(anyhow!("This key distribution not intended for me"));
                 }
+
+                let sender_x25519_public = peer_identity
+                    .peer_x25519_keys
+                    .get(key_dist.recipient_id.as_str())
+                    .ok_or_else(|| anyhow!("Unknown sender: {}", key_dist.recipient_id))?;
+
+                if key_dist.encrypted_sender_key.len() < 12 {
+                    return Err(anyhow!("Encrypted data too short"));
+                }
+
+                // Extract nonce and encrypted key
+                let (nonce_bytes, encrypted_key) = key_dist.encrypted_sender_key.split_at(12);
+                let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
+
+                // Perform ECDH to get shared secret
+                let shared_secret = my_identity
+                    .x25519_secret_key
+                    .diffie_hellman(sender_x25519_public);
+
+                // Use shared secret as decryption key
+                let key = chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
+                let cipher = ChaCha20Poly1305::new(key);
+
+                let decrypted_key = cipher
+                    .decrypt(nonce, encrypted_key)
+                    .map_err(|e| anyhow!("Creating the decrypted_key failed: {}", e))?;
+
+                if decrypted_key.len() != 32 {
+                    return Err(anyhow!("Invalid sender key length"));
+                }
+
+                let sender_key = Key::from_slice(&decrypted_key);
+                let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                // Construct the sender key enum and return to processor
+                let peer_sender_key: ReceivedMessage =
+                    ReceivedMessage::PeerSenderKey(PeerSenderKey {
+                        sender_key: key_dist.sender_id.clone(),
+                        key_id: key_dist.key_id,
+                        sender_cipher,
+                    });
+
+                // Return the sender key to the processor for updating peer_identity
+                return Ok(peer_sender_key);
             }
-            Err(e) => {
-                let error_msg = format!(
-                    "Failed to receive message on agent {}: {}",
-                    self.agent_id, e
-                );
-                tracing::error!("{}", error_msg);
-                Err(NetworkError::ReceiveError(error_msg))
+            Some(PacketType::EncryptedMsg(encrypted_msg)) => {
+                // Handle encrypted message
+                let plaintext = decrypt_message(
+                    &encrypted_msg.sender_id,
+                    encrypted_msg.key_id,
+                    &encrypted_msg.encrypted_payload,
+                    &encrypted_msg.nonce,
+                    &peer_identity,
+                )?;
+                Ok(ReceivedMessage::PlaintextPayload(plaintext))
+
+                // if encrypted_msg.sender_id != my_identity.my_sender_id {
+                //     match decrypt_message(
+                //         &encrypted_msg.sender_id,
+                //         encrypted_msg.key_id,
+                //         &encrypted_msg.encrypted_payload,
+                //         &encrypted_msg.nonce,
+                //         &peer_identity,
+                //     ) {
+                //         Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
+                //         Err(_) => {
+                //             bail!(
+                //                 "(encrypted message from {} - no key)",
+                //                 encrypted_msg.sender_id
+                //             );
+                //         }
+                //     }
+                // } else {
+                //     // Ignore messages sent by self
+                //     Err(anyhow!("Ignoring self-sent message"))
+                // }
             }
+            None => todo!(),
         }
     }
 }

@@ -1,0 +1,147 @@
+// =============================================================================
+// Agora Protocol Buffer Definitions
+//
+// This file defines the complete message structure for Secure Group Chat
+//
+// Protocol Features:
+// - End-to-end encryption with no PFS (Perfect Forward Secrecy NOT implemented)
+// - No double ratchet (yet)
+// - Decentralized key distribution
+// - Group messaging without central authority
+//
+// Generated Rust Code:
+// - Uses prost crate for serialization/deserialization
+// - Located at: src/agora_proto.rs (after cargo build)
+// - Use: include!(concat!(env!("OUT_DIR"), "/agora_proto.rs"));
+// =============================================================================
+
+syntax = "proto3";
+package agora_proto;
+
+// =============================================================================
+// TOP-LEVEL MESSAGE CONTAINER
+// =============================================================================
+
+// ChatPacket: Top-level container for all network messages in Agora chat system
+// Using oneof ensures messages are exactly one type, preventing type confusion attacks
+message ChatPacket {
+  oneof packet_type {
+    // Public key announcement for identity verification
+    PublicKeyAnnouncement public_key = 1;
+
+    // Encrypted sender key distribution (double ratchet advancement)
+    KeyDistribution key_dist = 2;
+
+    // Actual encrypted chat message
+    EncryptedMessage encrypted_msg = 3;
+  }
+}
+
+// =============================================================================
+// PUBLIC KEY MANAGEMENT
+// =============================================================================
+
+// PublicKeyAnnouncement: Announces user's long-term public key for identity verification
+// Broadcast when joining group or after key rotation
+message PublicKeyAnnouncement {
+  string user_id = 1;
+  bytes x25519_public_key = 2;  // 32 bytes for ECDH
+  bytes ed25519_public_key = 3; // 32 bytes for verification
+}
+
+// =============================================================================
+// SENDER KEY MANAGEMENT
+// =============================================================================
+
+// KeyDistribution: Distributes ephemeral sender keys encrypted for specific recipients
+message KeyDistribution {
+  // User generating and distributing this key
+  string sender_id = 1;
+
+  // Unique key chain identifier (uint32 allows ~4B keys per conversation)
+  // Incrementing counter that advances for each new key in the chain
+  uint32 key_id = 2;
+
+  // Symmetric key encrypted with recipient's public key
+  // Only intended recipient can decrypt and use this key
+  bytes encrypted_sender_key = 3;
+
+  // Target recipient's user ID (allows for DMs in group chat)
+  // Recipients ignore distributions not intended for them
+  string recipient_id = 4;
+}
+
+// =============================================================================
+// ENCRYPTED MESSAGES
+// =============================================================================
+
+// EncryptedMessage: Contains the actual encrypted chat content
+// References distributed key_id for decryption
+message EncryptedMessage {
+  // Message originator (should match key distributor)
+  string sender_id = 1;
+
+  // Key ID this message was encrypted with
+  // Recipients must have received corresponding KeyDistribution
+  uint32 key_id = 2;
+
+  // PlaintextPayload encrypted with sender key
+  // Uses authenticated encryption: AES-GCM or ChaCha20-Poly1305 recommended
+  bytes encrypted_payload = 3;
+
+  // Cryptographic nonce for encryption (12 bytes for AES-GCM, 24 for ChaCha20)
+  // Never reuse nonce with same key - prevents known plaintext attacks
+  bytes nonce = 4;
+}
+
+// =============================================================================
+// PLAINTEXT PAYLOAD
+// =============================================================================
+
+// PlaintextPayload: Internal message structure encrypted within EncryptedMessage
+// Separate from EncryptedMessage to allow future extensibility
+message PlaintextPayload {
+  // Sender identifier (redundant with outer message for validation)
+  string sender_id = 1;
+
+  // Actual chat message content (Unicode text)
+  string content = 2;
+
+  // Unix nanosecond timestamp (allows message ordering despite network delays)
+  uint64 timestamp = 3;
+}
+
+// =============================================================================
+// IMPLEMENTATION NOTES
+//
+// Usage Example (Rust):
+// ```rust
+// use prost::Message;
+// let packet = ChatPacket {
+//     packet_type: Some(chat_packet::PacketType::PublicKey(
+//         PublicKeyAnnouncement {
+//             user_id: "alice".to_string(),
+//             public_key: vec![0; 32], // 32 bytes
+//         }
+//     )),
+// };
+// let bytes = packet.encode_to_vec();
+// ```
+//
+// Security Considerations:
+// - Always validate packet oneof field exists (reject empty/invalid messages)
+// - Verify signed public keys have valid cryptographic signatures
+// - Implement key ratcheting to advance key_id regularly
+// - Use authenticated encryption to prevent tampering
+// - Discard messages with unknown key_id (require new key distribution)
+//
+// Backward Compatibility:
+// - New message types can be added with higher field numbers
+// - Existing fields should never be removed (use reserved instead)
+// - Field types can be converted only within protobuf type limitations
+//
+// Performance:
+// - Compact binary format reduces network overhead
+// - Efficient parsing with protobuf reflection
+// - Streaming support for large messages if needed
+// =============================================================================
