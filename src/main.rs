@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
         MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
 
-    debug!("Loaded identity with sender ID: {}", identity.my_sender_id);
+    debug!("Loaded identity with sender ID: {}", identity.display_name);
 
     // Initialize peer identity (empty for now, will be populated as we receive messages)
     let peer_identity = PeerIdentity::new();

@@ -43,7 +43,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     tracing::debug!("Encrypting message content: {}", content);
     // Create plaintext payload
     let payload = PlaintextPayload {
-        sender_id: identity.my_sender_id.to_string(),
+        sender_id: identity.display_name.to_string(),
         content: content.to_string(),
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -117,7 +117,7 @@ pub fn decrypt_message(
 // Announce our public key to the group
 pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPacket {
     let announcement = PublicKeyAnnouncement {
-        user_id: my_identity.my_sender_id.to_string(),
+        user_id: my_identity.display_name.to_string(),
         x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
         ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
     };
@@ -134,7 +134,7 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
 
     // Create the EncryptedMessage without the signature first
     let mut encrypted_msg = crate::chat_message::EncryptedMessage {
-        sender_id: my_identity.my_sender_id.to_string(),
+        sender_public_key_hash: my_identity.sender_public_key_hash.clone(),
         key_id: my_identity.current_key_id,
         encrypted_payload,
         nonce,
@@ -158,10 +158,9 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
 /// Exclude the signature field itself.
 /// A hasher masher! :)
 fn create_signable_data(msg: &EncryptedMessage) -> Vec<u8> {
-    let mut hasher = Sha256::new();
+    let mut hasher = sha2::Sha256::new();
 
     // Hash all fields in a specific order (excluding signature)
-    hasher.update(msg.sender_id.as_bytes());
     hasher.update(&msg.key_id.to_le_bytes());
     hasher.update(&msg.encrypted_payload);
     hasher.update(&msg.nonce);
@@ -178,6 +177,18 @@ pub fn sign_message(msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<
     let signature = my_identity.signing_key.sign(&data_to_sign);
 
     Ok(signature.to_bytes().to_vec())
+}
+
+/// Generate a SHA256 hash of the verifying (public) key.
+/// This is used to identify the sender in messages.
+pub fn get_sender_public_key_hash_as_hex(sender_public_key_hash: &[u8]) -> String {
+    // NOTE: it's not safe to directly convert the raw hash bytes (Vec<u8>) to a String.
+    // This is because a Rust String is required to be valid UTF-8,
+    // but the raw bytes of a SHA-256 hash are arbitrary binary data and have no guarantee of forming a valid UTF-8 sequence.
+    // Attempting a direct conversion will either fail or corrupt the data.
+    //
+    // But hex is totes awesome for this purpose. :)
+    hex::encode(&sender_public_key_hash)
 }
 
 // // Create encrypted sender key for a specific recipient

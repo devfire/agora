@@ -44,9 +44,10 @@ message ChatPacket {
 // PublicKeyAnnouncement: Announces user's long-term public key for identity verification
 // Broadcast when joining group or after key rotation
 message PublicKeyAnnouncement {
-  string user_id = 1;
-  bytes x25519_public_key = 2;  // 32 bytes for ECDH
-  bytes ed25519_public_key = 3; // 32 bytes for verification
+  bytes sender_public_key_hash = 1;  // SHA-256 of ed25519_public_key (matches message identity)
+  bytes x25519_public_key = 2;        // 32 bytes for ECDH
+  bytes ed25519_public_key = 3;       // 32 bytes for verification
+  string display_name = 4;            // Optional human-readable name
 }
 
 // =============================================================================
@@ -55,8 +56,8 @@ message PublicKeyAnnouncement {
 
 // KeyDistribution: Distributes ephemeral sender keys encrypted for specific recipients
 message KeyDistribution {
-  // User generating and distributing this key
-  string sender_id = 1;
+  // SHA-256 of ed25519_public_key (matches message identity)
+  bytes sender_public_key_hash = 1;
 
   // Unique key chain identifier (uint32 allows ~4B keys per conversation)
   // Incrementing counter that advances for each new key in the chain
@@ -68,7 +69,8 @@ message KeyDistribution {
 
   // Target recipient's user ID (allows for DMs in group chat)
   // Recipients ignore distributions not intended for them
-  string recipient_id = 4;
+  // Maybe future enhancement.
+  // string recipient_id = 4;
 }
 
 // =============================================================================
@@ -78,15 +80,15 @@ message KeyDistribution {
 // EncryptedMessage: Contains the actual encrypted chat content
 // References distributed key_id for decryption
 message EncryptedMessage {
-  // Message originator (should match key distributor)
-  string sender_id = 1;
+  // SHA256 of the sender Ed25519 public key
+  bytes sender_public_key_hash = 1;
 
   // Key ID this message was encrypted with
   // Recipients must have received corresponding KeyDistribution
   uint32 key_id = 2;
 
   // PlaintextPayload encrypted with sender key
-  // Uses authenticated encryption: AES-GCM or ChaCha20-Poly1305 recommended
+  // Uses authenticated encryption: ChaCha20-Poly1305
   bytes encrypted_payload = 3;
 
   // Cryptographic nonce for encryption (12 bytes for AES-GCM, 24 for ChaCha20)
@@ -105,8 +107,8 @@ message EncryptedMessage {
 // PlaintextPayload: Internal message structure encrypted within EncryptedMessage
 // Separate from EncryptedMessage to allow future extensibility
 message PlaintextPayload {
-  // Sender identifier (redundant with outer message for validation)
-  string sender_id = 1;
+  // Human readable name
+  string display_name = 1;
 
   // Actual chat message content (Unicode text)
   string content = 2;

@@ -45,10 +45,10 @@ impl Processor {
             debug!("Starting chat processing task for agent '{}'", chat_id);
             while let Some(message) = receiver.recv().await {
                 // Filter messages sent by self
-                if message.sender_id != chat_id {
+                if message.display_name != chat_id {
                     debug!(
                         "Chat processing received message from '{}' with content: '{}'",
-                        message.sender_id,
+                        message.display_name,
                         message.content // message.content.chars().take(50).collect::<String>()
                     );
 
@@ -56,11 +56,11 @@ impl Processor {
                     eprint!("\r\x1b[K"); // Carriage return and clear line
                     eprintln!(
                         "{} {}: {}",
-                        message.timestamp, message.sender_id, message.content
+                        message.timestamp, message.display_name, message.content
                     );
                     eprint!("{} > ", chat_id); // Re-display the prompt
                 } else {
-                    debug!("Ignoring self-sent message from '{}'", message.sender_id);
+                    debug!("Ignoring self-sent message from '{}'", message.display_name);
                 }
             }
             info!("Message display task ending.");
@@ -97,7 +97,7 @@ impl Processor {
                                     Some(PacketType::PublicKey(announcement)) => {
                                         info!(
                                             "Received PublicKeyAnnouncement from '{}'",
-                                            announcement.user_id
+                                            announcement.display_name
                                         );
 
                                         // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
@@ -117,15 +117,21 @@ impl Processor {
 
                                         // check to see if I am the sender
                                         if this_is_me {
-                                            info!("But I am '{}', ignoring.", announcement.user_id);
+                                            info!(
+                                                "But I am '{}', ignoring.",
+                                                announcement.display_name
+                                            );
                                             continue; // We gon baaaaail...
                                         }
                                         // Add peer keys to peer identity
                                         // TODO: Filter out self-sent announcements
-                                        info!("Adding peer keys for '{}'", announcement.user_id);
+                                        info!(
+                                            "Adding peer keys for '{}'",
+                                            announcement.display_name
+                                        );
                                         peer_identity
                                             .add_peer_keys(
-                                                announcement.user_id.clone(),
+                                                // NOTE: internally, this uses the hex-encoded SHA256 hash of the Ed25519 public key as the identifier
                                                 &announcement.x25519_public_key,
                                                 &announcement.ed25519_public_key,
                                             )
@@ -137,10 +143,10 @@ impl Processor {
                                         );
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
-                                            sender_id: announcement.user_id.clone(),
+                                            display_name: announcement.display_name.clone(),
                                             content: format!(
                                                 "{} has joined the chat.",
-                                                &announcement.user_id
+                                                &announcement.display_name
                                             ),
                                             timestamp: std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
@@ -149,10 +155,10 @@ impl Processor {
                                         };
                                         // Forward the announcement to the message display task
                                         // TODO: this needs to be removed because we already filtered out self-sent announcements above
-                                        if payload.sender_id != chat_id {
+                                        if payload.display_name != chat_id {
                                             debug!(
                                                 "Forwarding announcement from '{}'",
-                                                payload.sender_id
+                                                payload.display_name
                                             );
                                             message_sender
                                                 .send(payload)
@@ -161,7 +167,7 @@ impl Processor {
                                         } else {
                                             debug!(
                                                 "Ignoring self-sent announcement from '{}'",
-                                                payload.sender_id
+                                                payload.display_name
                                             );
                                         }
                                     }
@@ -173,8 +179,9 @@ impl Processor {
                                     // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
                                     Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                                         info!(
-                                            "Received EncryptedMessage from '{}', key_id {}",
-                                            encrypted_msg.sender_id, encrypted_msg.key_id
+                                            "Received EncryptedMessage from '{:?}', key_id {}",
+                                            encrypted_msg.sender_public_key_hash,
+                                            encrypted_msg.key_id
                                         );
                                         // Decrypt the message
                                     }
@@ -188,8 +195,8 @@ impl Processor {
                                 debug!("Received PlaintextPayload: {:?}", payload);
                                 // Forward the plaintext payload to the message display task
                                 // Filter messages sent by self
-                                if payload.sender_id != chat_id {
-                                    debug!("Forwarding message from '{}'", payload.sender_id);
+                                if payload.display_name != chat_id {
+                                    debug!("Forwarding message from '{}'", payload.display_name);
                                     message_sender
                                         .send(payload.clone())
                                         .await
@@ -197,7 +204,7 @@ impl Processor {
                                 } else {
                                     debug!(
                                         "Ignoring self-sent message from '{}'",
-                                        payload.sender_id
+                                        payload.display_name
                                     );
                                 }
                             }

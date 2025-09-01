@@ -171,7 +171,7 @@ impl NetworkManager {
                     "Received KeyDistribution from '{}', key_id {}, intended for '{}'",
                     key_dist.sender_id, key_dist.key_id, key_dist.recipient_id
                 );
-                if key_dist.recipient_id == my_identity.my_sender_id {
+                if key_dist.recipient_id == my_identity.display_name {
                     // Ignore key distributions not intended for me
                     return Err(anyhow!("This key distribution not intended for me"));
                 }
@@ -223,7 +223,7 @@ impl NetworkManager {
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                 // Handle encrypted message
                 let plaintext = decrypt_message(
-                    &encrypted_msg.sender_id,
+                    &encrypted_msg.sender_public_key_hash,
                     encrypted_msg.key_id,
                     &encrypted_msg.encrypted_payload,
                     &encrypted_msg.nonce,
