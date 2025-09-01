@@ -1,13 +1,15 @@
 use crate::{
     chat_message::{PlaintextPayload, chat_packet::PacketType},
-    crypto::{ReceivedMessage, create_encrypted_chat_packet},
+    crypto::{ReceivedMessage, create_encrypted_chat_packet, get_sender_public_key_hash_as_hex},
     identity::{MyIdentity, PeerIdentity},
     network,
 };
 
-use anyhow::bail;
+use anyhow::Error;
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
+// use anyhow::{anyhow};
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
@@ -171,8 +173,62 @@ impl Processor {
                                             );
                                         }
                                     }
-                                    Some(PacketType::KeyDist(_key_dist)) => {
-                                        debug!("Received KeyDistribution packet");
+                                    Some(PacketType::KeyDist(key_dist)) => {
+                                        info!("Received KeyDistribution packet");
+                                        // First, let's convert the sender_public_key_hash to hex string for lookup
+                                        let sender_key_hash_hex = get_sender_public_key_hash_as_hex(
+                                            &key_dist.sender_public_key_hash,
+                                        );
+                                        debug!(
+                                            "KeyDist from sender_public_key_hash: {}",
+                                            sender_key_hash_hex
+                                        );
+                                        let sender_x25519_public = peer_identity
+                                            .peer_x25519_keys
+                                            .get(&sender_key_hash_hex)
+                                            .ok_or_else(|| {
+                                                error!("Unknown sender: {}", sender_key_hash_hex)
+                                            })
+                                            .expect("Failed to get the peer public key.");
+
+                                        if key_dist.encrypted_sender_key.len() < 12 {
+                                            error!("Encrypted data too short");
+                                            continue;
+                                        }
+
+                                        // Extract nonce and encrypted key
+                                        let (nonce_bytes, encrypted_key) =
+                                            key_dist.encrypted_sender_key.split_at(12);
+                                        let nonce =
+                                            chacha20poly1305::Nonce::from_slice(nonce_bytes);
+
+                                        // Perform ECDH to get shared secret
+                                        let shared_secret = my_identity
+                                            .x25519_secret_key
+                                            .diffie_hellman(sender_x25519_public);
+
+                                        // Use shared secret as decryption key
+                                        let key = chacha20poly1305::Key::from_slice(
+                                            shared_secret.as_bytes(),
+                                        );
+                                        let cipher = ChaCha20Poly1305::new(key);
+
+                                        let decrypted_key = cipher
+                                            .decrypt(nonce, encrypted_key)
+                                            .map_err(|e| {
+                                                error!("Creating the decrypted_key failed: {}", e)
+                                            })
+                                            .expect("Failed to decrypt the sender key.");
+
+                                        if decrypted_key.len() != 32 {
+                                            error!("Invalid sender key length");
+                                        }
+
+                                        let sender_key = Key::from_slice(&decrypted_key);
+                                        let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                                        // Add the 
+
                                         // Handle KeyDistribution if needed
                                     }
 
@@ -207,20 +263,18 @@ impl Processor {
                                         payload.display_name
                                     );
                                 }
-                            }
-                            ReceivedMessage::PeerSenderKey(peer_sender_key) => {
-                                debug!(
-                                    "Received PeerSenderKey for sender '{}', key_id {}",
-                                    peer_sender_key.sender_key, peer_sender_key.key_id
-                                );
+                            } // ReceivedMessage::PeerSenderKey(peer_sender_key) => {
 
-                                // Update peer_identity with the new sender key
-                                peer_identity
-                                    .peer_sender_keys
-                                    .entry(peer_sender_key.sender_key.to_string())
-                                    .or_insert_with(HashMap::new)
-                                    .insert(peer_sender_key.key_id, peer_sender_key.sender_cipher);
-                            }
+                              //     // Get the hex String of SHA256 Public key
+                              //     let peer_hash = get_sender_public_key_hash_as_hex(sender_public_key_hash);
+
+                              //     // Update peer_identity with the new sender key
+                              //     peer_identity
+                              //         .peer_sender_keys
+                              //         .entry(peer_sender_key.sender_key.to_string())
+                              //         .or_insert_with(HashMap::new)
+                              //         .insert(peer_sender_key.key_id, peer_sender_key.sender_cipher);
+                              // }
                         }
                     }
                     Err(e) => {

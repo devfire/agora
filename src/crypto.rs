@@ -7,9 +7,9 @@ use prost::Message;
 use anyhow::{Result, anyhow, bail};
 use tracing::debug;
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::Signer;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
@@ -23,27 +23,27 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 pub enum ReceivedMessage {
     ChatPacket(ChatPacket),
     PlaintextPayload(PlaintextPayload),
-    PeerSenderKey(PeerSenderKey),
+    // PeerSenderKey(PeerSenderKey),
 }
 
-pub struct PeerSenderKey {
-    pub sender_key: String,
-    pub key_id: u32,
-    pub sender_cipher: ChaCha20Poly1305,
-}
+// pub struct PeerSenderKey {
+//     // pub sender_key: String,
+//     pub key_id: u32,
+//     pub sender_cipher: ChaCha20Poly1305,
+// }
 use crate::{
     chat_message::{
         ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
         chat_packet::PacketType,
     },
-    identity::{self, MyIdentity, PeerIdentity},
+    identity::{MyIdentity, PeerIdentity},
 };
 
 pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>, Vec<u8>)> {
     tracing::debug!("Encrypting message content: {}", content);
     // Create plaintext payload
     let payload = PlaintextPayload {
-        sender_id: identity.display_name.to_string(),
+        display_name: identity.display_name.to_string(),
         content: content.to_string(),
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -86,7 +86,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
 }
 
 pub fn decrypt_message(
-    sender_id: &str,
+    sender_public_key_hash_hex: &str,
     key_id: u32,
     encrypted_payload: &[u8],
     nonce_bytes: &[u8],
@@ -94,12 +94,12 @@ pub fn decrypt_message(
 ) -> Result<PlaintextPayload> {
     let sender_keys = peer_identity
         .peer_sender_keys
-        .get(sender_id)
-        .ok_or_else(|| anyhow!("From decrypt_message(): Unknown sender: {}", sender_id))?;
+        .get(sender_public_key_hash_hex)
+        .ok_or_else(|| anyhow!("From decrypt_message(): Unknown sender: {}", sender_public_key_hash_hex))?;
 
     let cipher = sender_keys
         .get(&key_id)
-        .ok_or_else(|| anyhow!("Unknown key ID {} for sender {}", key_id, sender_id))?;
+        .ok_or_else(|| anyhow!("Unknown key ID {} for sender {}", key_id, sender_public_key_hash_hex))?;
 
     if nonce_bytes.len() != 12 {
         bail!("Invalid nonce length");
@@ -117,7 +117,7 @@ pub fn decrypt_message(
 // Announce our public key to the group
 pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPacket {
     let announcement = PublicKeyAnnouncement {
-        user_id: my_identity.display_name.to_string(),
+        display_name: my_identity.display_name.to_string(),
         x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
         ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
     };
@@ -132,9 +132,18 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
     tracing::debug!("Creating encrypted chat packet with content: {}", content);
     let (encrypted_payload, nonce) = encrypt_message(content, my_identity)?;
 
+    // Create the Sha256 hash of the sender's public key
+    // This is used to identify the sender in messages
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(my_identity.verifying_key.as_bytes());
+    let sender_public_key_hash = hasher.finalize().to_vec();
+    debug!(
+        "Sender public key hash (SHA256): {:?}",
+        sender_public_key_hash
+    );
     // Create the EncryptedMessage without the signature first
     let mut encrypted_msg = crate::chat_message::EncryptedMessage {
-        sender_public_key_hash: my_identity.sender_public_key_hash.clone(),
+        sender_public_key_hash,
         key_id: my_identity.current_key_id,
         encrypted_payload,
         nonce,

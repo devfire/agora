@@ -1,10 +1,10 @@
 use crate::{
     ChatPacket,
     chat_message::chat_packet::PacketType,
-    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message},
+    crypto::{ReceivedMessage, decrypt_message, get_sender_public_key_hash_as_hex},
     identity::{MyIdentity, PeerIdentity},
 };
-use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
+
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -12,7 +12,7 @@ use tracing::{debug, error, info};
 
 use tokio::net::UdpSocket;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 /// Configuration for network operations
 #[derive(Debug, Clone)]
@@ -165,65 +165,33 @@ impl NetworkManager {
             }
 
             Some(PacketType::KeyDist(key_dist)) => {
+                // Public keys are not encrypted.
+                // Return them to the processor as-is for handling.
+                let kd_packet = ChatPacket {
+                    packet_type: Some(PacketType::KeyDist(key_dist)),
+                };
+                Ok(ReceivedMessage::ChatPacket(kd_packet))
+
                 // Handle key distribution
                 // Get the other peers sender key and add to peer_identity
-                info!(
-                    "Received KeyDistribution from '{}', key_id {}, intended for '{}'",
-                    key_dist.sender_id, key_dist.key_id, key_dist.recipient_id
-                );
-                if key_dist.recipient_id == my_identity.display_name {
-                    // Ignore key distributions not intended for me
-                    return Err(anyhow!("This key distribution not intended for me"));
-                }
-
-                let sender_x25519_public = peer_identity
-                    .peer_x25519_keys
-                    .get(key_dist.recipient_id.as_str())
-                    .ok_or_else(|| anyhow!("Unknown sender: {}", key_dist.recipient_id))?;
-
-                if key_dist.encrypted_sender_key.len() < 12 {
-                    return Err(anyhow!("Encrypted data too short"));
-                }
-
-                // Extract nonce and encrypted key
-                let (nonce_bytes, encrypted_key) = key_dist.encrypted_sender_key.split_at(12);
-                let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
-
-                // Perform ECDH to get shared secret
-                let shared_secret = my_identity
-                    .x25519_secret_key
-                    .diffie_hellman(sender_x25519_public);
-
-                // Use shared secret as decryption key
-                let key = chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
-                let cipher = ChaCha20Poly1305::new(key);
-
-                let decrypted_key = cipher
-                    .decrypt(nonce, encrypted_key)
-                    .map_err(|e| anyhow!("Creating the decrypted_key failed: {}", e))?;
-
-                if decrypted_key.len() != 32 {
-                    return Err(anyhow!("Invalid sender key length"));
-                }
-
-                let sender_key = Key::from_slice(&decrypted_key);
-                let sender_cipher = ChaCha20Poly1305::new(sender_key);
 
                 // Construct the sender key enum and return to processor
-                let peer_sender_key: ReceivedMessage =
-                    ReceivedMessage::PeerSenderKey(PeerSenderKey {
-                        sender_key: key_dist.sender_id.clone(),
-                        key_id: key_dist.key_id,
-                        sender_cipher,
-                    });
+                // let peer_sender_key: ReceivedMessage =
+                //     ReceivedMessage::PeerSenderKey(PeerSenderKey {
+                //         key_id: key_dist.key_id,
+                //         sender_cipher,
+                //     });
 
-                // Return the sender key to the processor for updating peer_identity
-                return Ok(peer_sender_key);
+                // // Return the sender key to the processor for updating peer_identity
+                // return Ok(peer_sender_key);
             }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
+                // Convert the sender public key hash to hex string for lookup
+                let peer_sender_public_key_hash =
+                    get_sender_public_key_hash_as_hex(&encrypted_msg.sender_public_key_hash);
                 // Handle encrypted message
                 let plaintext = decrypt_message(
-                    &encrypted_msg.sender_public_key_hash,
+                    &peer_sender_public_key_hash,
                     encrypted_msg.key_id,
                     &encrypted_msg.encrypted_payload,
                     &encrypted_msg.nonce,

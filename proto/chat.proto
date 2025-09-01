@@ -29,7 +29,7 @@ message ChatPacket {
     // Public key announcement for identity verification
     PublicKeyAnnouncement public_key = 1;
 
-    // Encrypted sender key distribution (double ratchet advancement)
+    // Encrypted sender key distribution
     KeyDistribution key_dist = 2;
 
     // Actual encrypted chat message
@@ -44,10 +44,9 @@ message ChatPacket {
 // PublicKeyAnnouncement: Announces user's long-term public key for identity verification
 // Broadcast when joining group or after key rotation
 message PublicKeyAnnouncement {
-  bytes sender_public_key_hash = 1;  // SHA-256 of ed25519_public_key (matches message identity)
+  string display_name = 1;            // Human-readable name
   bytes x25519_public_key = 2;        // 32 bytes for ECDH
   bytes ed25519_public_key = 3;       // 32 bytes for verification
-  string display_name = 4;            // Optional human-readable name
 }
 
 // =============================================================================
