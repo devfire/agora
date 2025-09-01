@@ -7,6 +7,10 @@ use prost::Message;
 use anyhow::{Result, anyhow, bail};
 use tracing::debug;
 
+use sha2::{Digest, Sha256};
+
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
 /// ChatPacket is for control messages (e.g., PublicKeyAnnouncement)
@@ -28,8 +32,11 @@ pub struct PeerSenderKey {
     pub sender_cipher: ChaCha20Poly1305,
 }
 use crate::{
-    chat_message::{ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType},
-    identity::{MyIdentity, PeerIdentity},
+    chat_message::{
+        ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
+        chat_packet::PacketType,
+    },
+    identity::{self, MyIdentity, PeerIdentity},
 };
 
 pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -125,16 +132,52 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
     tracing::debug!("Creating encrypted chat packet with content: {}", content);
     let (encrypted_payload, nonce) = encrypt_message(content, my_identity)?;
 
-    let encrypted_msg = crate::chat_message::EncryptedMessage {
+    // Create the EncryptedMessage without the signature first
+    let mut encrypted_msg = crate::chat_message::EncryptedMessage {
         sender_id: my_identity.my_sender_id.to_string(),
         key_id: my_identity.current_key_id,
         encrypted_payload,
         nonce,
+        signature: Vec::new(), // Signature will be added later during the signing process
     };
+
+    // Sign the message
+    let signature = sign_message(&encrypted_msg, my_identity)?;
+
+    // Now replace the Vec::new placeholder with the correct signature we just created
+    encrypted_msg.signature = signature;
 
     Ok(ChatPacket {
         packet_type: Some(PacketType::EncryptedMsg(encrypted_msg)),
     })
+}
+
+/// Creates the canonical byte representation for signing.
+/// This must be deterministic and match verification.
+/// Basically we mash everything together in a specific order.
+/// Exclude the signature field itself.
+/// A hasher masher! :)
+fn create_signable_data(msg: &EncryptedMessage) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+
+    // Hash all fields in a specific order (excluding signature)
+    hasher.update(msg.sender_id.as_bytes());
+    hasher.update(&msg.key_id.to_le_bytes());
+    hasher.update(&msg.encrypted_payload);
+    hasher.update(&msg.nonce);
+
+    hasher.finalize().to_vec()
+}
+
+/// Signs an EncryptedMessage and returns the signature
+pub fn sign_message(msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>> {
+    // Create the data to sign by concatenating all fields
+    let data_to_sign = create_signable_data(msg);
+
+    // Sign the data
+    let signature = my_identity.signing_key.sign(&data_to_sign);
+
+    Ok(signature.to_bytes().to_vec())
 }
 
 // // Create encrypted sender key for a specific recipient

@@ -58,6 +58,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chacha20poly1305",
  "clap",
  "ed25519-dalek",
@@ -71,6 +72,7 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
+ "sha2",
  "shellexpand",
  "socket2",
  "ssh-key",
@@ -555,6 +557,7 @@ dependencies = [
  "ed25519",
  "serde",
  "sha2",
+ "signature",
  "subtle",
  "zeroize",
 ]

@@ -92,6 +92,10 @@ message EncryptedMessage {
   // Cryptographic nonce for encryption (12 bytes for AES-GCM, 24 for ChaCha20)
   // Never reuse nonce with same key - prevents known plaintext attacks
   bytes nonce = 4;
+
+  // Ed25519 signature over hash of (sender_id + key_id + encrypted_payload + nonce)
+  // 64 bytes - proves sender owns the private key corresponding to their announced public key
+  bytes signature = 5;
 }
 
 // =============================================================================
