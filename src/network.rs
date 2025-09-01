@@ -7,8 +7,8 @@ use crate::{
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
-use tracing::error;
 use std::net::{Ipv4Addr, SocketAddr};
+use tracing::{debug, error, info};
 
 use tokio::net::UdpSocket;
 
@@ -123,7 +123,7 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
-        tracing::info!("Sending packet: {:?}", packet);
+        debug!("Sending packet: {:?}", packet);
         if let Some(packet_to_send) = packet.packet_type {
             // Serialize the packet to bytes
             let packet_bytes = ChatPacket {
@@ -152,6 +152,8 @@ impl NetworkManager {
         // Deserialize the received bytes into a ChatPacket
         let packet = ChatPacket::decode(&buffer[..len])?;
 
+        info!("Received packet: {:?}", packet);
+
         match packet.packet_type {
             Some(PacketType::PublicKey(announcement)) => {
                 // Public keys are not encrypted.
@@ -165,7 +167,11 @@ impl NetworkManager {
             Some(PacketType::KeyDist(key_dist)) => {
                 // Handle key distribution
                 // Get the other peers sender key and add to peer_identity
-                if key_dist.recipient_id != my_identity.my_sender_id {
+                info!(
+                    "Received KeyDistribution from '{}', key_id {}, intended for '{}'",
+                    key_dist.sender_id, key_dist.key_id, key_dist.recipient_id
+                );
+                if key_dist.recipient_id == my_identity.my_sender_id {
                     // Ignore key distributions not intended for me
                     return Err(anyhow!("This key distribution not intended for me"));
                 }

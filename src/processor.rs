@@ -5,6 +5,7 @@ use crate::{
     network,
 };
 
+use anyhow::bail;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::{collections::HashMap, sync::Arc};
 use subtle::ConstantTimeEq;
@@ -101,7 +102,7 @@ impl Processor {
 
                                         // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
                                         // Since we are comparing cryptographic key material, it's crucial to avoid any timing discrepancies that could leak information about the key.
-                                        // A standard equality check (==) is not safe for this purpose because it "short-circuits"—it returns false as soon as it finds a mismatch.
+                                        // A standard equality check (==) is not safe for this purpose because it "short-circuits" (lol) it returns false as soon as it finds a mismatch.
                                         // An attacker could potentially measure the tiny differences in comparison time to guess the key's value byte by byte.
                                         //
                                         // The correct and secure method is to use a crate like subtle that provides constant-time cryptographic functions.
@@ -117,7 +118,7 @@ impl Processor {
                                         // check to see if I am the sender
                                         if this_is_me {
                                             info!("But I am '{}', ignoring.", announcement.user_id);
-                                            continue;
+                                            continue; // We gon baaaaail...
                                         }
                                         // Add peer keys to peer identity
                                         // TODO: Filter out self-sent announcements
@@ -147,6 +148,7 @@ impl Processor {
                                                 .as_secs(),
                                         };
                                         // Forward the announcement to the message display task
+                                        // TODO: this needs to be removed because we already filtered out self-sent announcements above
                                         if payload.sender_id != chat_id {
                                             debug!(
                                                 "Forwarding announcement from '{}'",
@@ -166,6 +168,15 @@ impl Processor {
                                     Some(PacketType::KeyDist(_key_dist)) => {
                                         debug!("Received KeyDistribution packet");
                                         // Handle KeyDistribution if needed
+                                    }
+
+                                    // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
+                                    Some(PacketType::EncryptedMsg(encrypted_msg)) => {
+                                        info!(
+                                            "Received EncryptedMessage from '{}', key_id {}",
+                                            encrypted_msg.sender_id, encrypted_msg.key_id
+                                        );
+                                        // Decrypt the message
                                     }
                                     _ => {
                                         error!("Unknown ChatPacket type received.");
@@ -207,7 +218,6 @@ impl Processor {
                     }
                     Err(e) => {
                         error!("Error receiving message: {}", e);
-                        // bail!("UDP intake task failed: {}", e);
                     }
                 }
             }

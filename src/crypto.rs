@@ -1,10 +1,11 @@
 use chacha20poly1305::{
-    AeadCore, ChaCha20Poly1305, Key, KeyInit,
+    AeadCore, ChaCha20Poly1305,
     aead::{Aead, OsRng as ChaChaOsRng},
 };
 use prost::Message;
 
 use anyhow::{Result, anyhow, bail};
+use tracing::debug;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
@@ -27,9 +28,7 @@ pub struct PeerSenderKey {
     pub sender_cipher: ChaCha20Poly1305,
 }
 use crate::{
-    chat_message::{
-        self, ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType,
-    },
+    chat_message::{ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType},
     identity::{MyIdentity, PeerIdentity},
 };
 
@@ -89,7 +88,7 @@ pub fn decrypt_message(
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_id)
-        .ok_or_else(|| anyhow!("Unknown sender: {}", sender_id))?;
+        .ok_or_else(|| anyhow!("From decrypt_message(): Unknown sender: {}", sender_id))?;
 
     let cipher = sender_keys
         .get(&key_id)
@@ -116,7 +115,7 @@ pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPac
         ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
     };
 
-    tracing::info!("Creating public key announcement: {:?}", announcement);
+    debug!("Creating public key announcement: {:?}", announcement);
     ChatPacket {
         packet_type: Some(PacketType::PublicKey(announcement)),
     }
@@ -138,50 +137,50 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
     })
 }
 
-// Create encrypted sender key for a specific recipient
-pub fn create_key_distribution(
-    my_identity: &MyIdentity,
-    peer_identity: &PeerIdentity,
-    recipient_id: &str,
-) -> Result<ChatPacket> {
-    let recipient_x25519_public = peer_identity
-        .peer_x25519_keys
-        .get(recipient_id)
-        .ok_or_else(|| anyhow!("Unknown recipient: {}", recipient_id))?;
+// // Create encrypted sender key for a specific recipient
+// pub fn create_key_distribution(
+//     my_identity: &MyIdentity,
+//     peer_identity: &PeerIdentity,
+//     recipient_id: &str,
+// ) -> Result<ChatPacket> {
+//     let recipient_x25519_public = peer_identity
+//         .peer_x25519_keys
+//         .get(recipient_id)
+//         .ok_or_else(|| anyhow!("Unknown recipient: {}", recipient_id))?;
 
-    // Perform ECDH to get shared secret
-    let shared_secret = my_identity
-        .x25519_secret_key
-        .diffie_hellman(recipient_x25519_public);
+//     // Perform ECDH to get shared secret
+//     let shared_secret = my_identity
+//         .x25519_secret_key
+//         .diffie_hellman(recipient_x25519_public);
 
-    // Use shared secret as encryption key
-    let key = Key::from_slice(shared_secret.as_bytes());
-    let cipher = ChaCha20Poly1305::new(key);
+//     // Use shared secret as encryption key
+//     let key = Key::from_slice(shared_secret.as_bytes());
+//     let cipher = ChaCha20Poly1305::new(key);
 
-    let (_, sender_key_bytes) = my_identity
-        .get_sender_key()
-        .ok_or_else(|| anyhow!("No current sender key"))?;
+//     let (_, sender_key_bytes) = my_identity
+//         .get_sender_key()
+//         .ok_or_else(|| anyhow!("No current sender key"))?;
 
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng);
-    let encrypted_key = cipher
-        .encrypt(&nonce, sender_key_bytes.as_ref())
-        .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
+//     let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng);
+//     let encrypted_key = cipher
+//         .encrypt(&nonce, sender_key_bytes.as_ref())
+//         .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
 
-    let key_dist = chat_message::KeyDistribution {
-        sender_id: my_identity.my_sender_id.to_string(),
-        key_id: my_identity.current_key_id,
-        encrypted_sender_key: encrypted_key,
-        recipient_id: recipient_id.to_string(),
-    };
-    Ok(ChatPacket {
-        packet_type: Some(PacketType::KeyDist(key_dist)),
-    })
+//     let key_dist = chat_message::KeyDistribution {
+//         sender_id: my_identity.my_sender_id.to_string(),
+//         key_id: my_identity.current_key_id,
+//         encrypted_sender_key: encrypted_key,
+//         recipient_id: recipient_id.to_string(),
+//     };
+//     Ok(ChatPacket {
+//         packet_type: Some(PacketType::KeyDist(key_dist)),
+//     })
 
-    // Prepend nonce to encrypted key
-    // let mut result = nonce.to_vec();
-    // result.extend_from_slice(&encrypted_key);
-    // Ok(result)
-}
+//     // Prepend nonce to encrypted key
+//     // let mut result = nonce.to_vec();
+//     // result.extend_from_slice(&encrypted_key);
+//     // Ok(result)
+// }
 
 // /// Create a key distribution packet to share a new sender key with a peer
 // pub async fn distribute_sender_key(

@@ -69,8 +69,8 @@ impl PeerIdentity {
 #[derive(Clone)]
 pub struct MyIdentity {
     // Our Ed25519 identity (for signatures/verification from the SSH key)
-    pub signing_key: SigningKey,
-    pub verifying_key: VerifyingKey,
+    pub signing_key: SigningKey, // comes from the SSH private key
+    pub verifying_key: VerifyingKey, // VerifyingKey is the public key counterpart to SigningKey
 
     // Encryption (separate, generated key)
     pub x25519_secret_key: StaticSecret,
