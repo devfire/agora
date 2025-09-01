@@ -5,7 +5,6 @@ use crate::{
     network,
 };
 
-use anyhow::Error;
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 // use anyhow::{anyhow};
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -87,10 +86,7 @@ impl Processor {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
             loop {
-                match network_manager
-                    .receive_message(&my_identity, &peer_identity)
-                    .await
-                {
+                match network_manager.receive_message(&peer_identity).await {
                     Ok(message) => {
                         match message {
                             ReceivedMessage::ChatPacket(packet) => {
@@ -227,7 +223,12 @@ impl Processor {
                                         let sender_key = Key::from_slice(&decrypted_key);
                                         let sender_cipher = ChaCha20Poly1305::new(sender_key);
 
-                                        // Add the 
+                                        // Add the key to peer_identity
+                                        peer_identity
+                                            .peer_sender_keys
+                                            .entry(sender_key_hash_hex.clone())
+                                            .or_insert_with(std::collections::HashMap::new)
+                                            .insert(key_dist.key_id, sender_cipher);
 
                                         // Handle KeyDistribution if needed
                                     }

@@ -2,7 +2,7 @@ use crate::{
     ChatPacket,
     chat_message::chat_packet::PacketType,
     crypto::{ReceivedMessage, decrypt_message, get_sender_public_key_hash_as_hex},
-    identity::{MyIdentity, PeerIdentity},
+    identity::PeerIdentity,
 };
 
 use prost::Message;
@@ -141,18 +141,14 @@ impl NetworkManager {
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(
-        &self,
-        my_identity: &MyIdentity,
-        peer_identity: &PeerIdentity,
-    ) -> Result<ReceivedMessage> {
+    pub async fn receive_message(&self, peer_identity: &PeerIdentity) -> Result<ReceivedMessage> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
         // Deserialize the received bytes into a ChatPacket
         let packet = ChatPacket::decode(&buffer[..len])?;
 
-        info!("Received packet: {:?}", packet);
+        debug!("Received packet: {:?}", packet);
 
         match packet.packet_type {
             Some(PacketType::PublicKey(announcement)) => {
