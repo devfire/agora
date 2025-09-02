@@ -1,7 +1,7 @@
 use crate::{
     ChatPacket,
     chat_message::chat_packet::PacketType,
-    crypto::{ReceivedMessage, decrypt_message, get_sender_public_key_hash_as_hex},
+    crypto::{ReceivedMessage, decrypt_message, get_public_key_hash_as_hex_string},
     identity::PeerIdentity,
 };
 
@@ -74,7 +74,7 @@ impl NetworkManager {
         socket.set_reuse_address(true)?;
 
         // Disable loopback so we don't receive our own messages
-        socket.set_multicast_loop_v4(false)?;
+        // socket.set_multicast_loop_v4(false)?;
 
         // On Unix systems, also set SO_REUSEPORT if available
         #[cfg(unix)]
@@ -187,7 +187,13 @@ impl NetworkManager {
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                 // Convert the sender public key hash to hex string for lookup
                 let peer_sender_public_key_hash =
-                    get_sender_public_key_hash_as_hex(&encrypted_msg.sender_public_key_hash);
+                    get_public_key_hash_as_hex_string(&encrypted_msg.sender_public_key_hash);
+
+                info!(
+                    "Received encrypted message from sender_public_key_hash: {:?}",
+                    peer_sender_public_key_hash
+                );
+
                 // Handle encrypted message
                 let plaintext = decrypt_message(
                     &peer_sender_public_key_hash,

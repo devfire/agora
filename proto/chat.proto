@@ -68,8 +68,7 @@ message KeyDistribution {
 
   // Target recipient's user ID (allows for DMs in group chat)
   // Recipients ignore distributions not intended for them
-  // Maybe future enhancement.
-  // string recipient_id = 4;
+  bytes recipient_public_key_hash = 4;
 }
 
 // =============================================================================

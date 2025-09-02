@@ -9,7 +9,7 @@ use tracing::{error, info};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::{SenderKey, crypto::get_sender_public_key_hash_as_hex};
+use crate::{SenderKey, crypto::get_public_key_hash_as_hex_string};
 #[derive(Clone)]
 pub struct PeerIdentity {
     // NOTE: String here is actually a hex-encoded SHA256 hash of the peer's Ed25519 public key
@@ -58,12 +58,12 @@ impl PeerIdentity {
         let verifying_key = VerifyingKey::from_bytes(&ed25519_array)?;
 
         // let's create the SHA256 hash of the verifying (public) key to use as the peer ID
-        let sender_public_key_hash = get_sender_public_key_hash_as_hex(verifying_key.as_bytes());
+        let sender_public_key_hash = get_public_key_hash_as_hex_string(verifying_key.as_bytes());
         self.peer_x25519_keys
             .insert(sender_public_key_hash.clone(), x25519_public);
         self.peer_verifying_keys
-            .insert(sender_public_key_hash, verifying_key);
-        info!("Added peer keys successfully");
+            .insert(sender_public_key_hash.clone(), verifying_key);
+        info!("Added peer key {} successfully", sender_public_key_hash);
         Ok(())
     }
 
@@ -98,7 +98,7 @@ pub struct MyIdentity {
     my_sender_keys: HashMap<u32, SenderKey>, // cipher + raw key bytes
     pub current_key_id: u32,
 
-    pub sender_public_key_hash: String, // Hex String of SHA256 hash of the verifying (public) key
+    pub sender_public_key_hash_as_hex: String, // Hex String of SHA256 hash of the verifying (public) key
 }
 
 impl MyIdentity {
@@ -179,7 +179,7 @@ impl MyIdentity {
         let x25519_public_key = X25519PublicKey::from(&x25519_secret_key);
 
         // let's create the SHA256 hash of the verifying (public) key
-        let sender_public_key_hash = get_sender_public_key_hash_as_hex(verifying_key.as_bytes());
+        let sender_public_key_hash = hex::encode(verifying_key.as_bytes());
         info!(
             "Loaded identity '{}', sender_public_key_hash {}",
             display_name, sender_public_key_hash
@@ -192,7 +192,7 @@ impl MyIdentity {
             my_sender_keys: HashMap::from([(current_key_id, my_sender_keys)]),
             current_key_id,
             display_name: display_name.to_string(),
-            sender_public_key_hash,
+            sender_public_key_hash_as_hex: sender_public_key_hash,
         })
     }
 
@@ -225,4 +225,12 @@ impl MyIdentity {
             None
         }
     }
+
+    // /// Return a binary Vec SHA256 hash of our Ed25519 public key
+    // pub fn get_my_public_key_hash_as_bytes(&self) -> Vec<u8> {
+    //     use sha2::Digest;
+    //     let mut hasher = sha2::Sha256::default();
+    //     hasher.update(self.verifying_key.as_bytes());
+    //     hasher.finalize().to_vec()
+    // }
 }

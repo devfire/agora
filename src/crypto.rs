@@ -1,13 +1,13 @@
 use chacha20poly1305::{
-    AeadCore, ChaCha20Poly1305,
+    AeadCore, ChaCha20Poly1305, Key, KeyInit,
     aead::{Aead, OsRng as ChaChaOsRng},
 };
 use prost::Message;
 
 use anyhow::{Result, anyhow, bail};
-use tracing::debug;
+use tracing::{debug, info};
 
-use sha2::{Digest};
+use sha2::Digest;
 
 use ed25519_dalek::Signer;
 
@@ -33,8 +33,8 @@ pub enum ReceivedMessage {
 // }
 use crate::{
     chat_message::{
-        ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
-        chat_packet::PacketType,
+        self, ChatPacket, EncryptedMessage, KeyDistribution, PlaintextPayload,
+        PublicKeyAnnouncement, chat_packet::PacketType,
     },
     identity::{MyIdentity, PeerIdentity},
 };
@@ -95,11 +95,20 @@ pub fn decrypt_message(
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_public_key_hash_hex)
-        .ok_or_else(|| anyhow!("From decrypt_message(): Unknown sender: {}", sender_public_key_hash_hex))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "From decrypt_message(): Unknown sender: {}",
+                sender_public_key_hash_hex
+            )
+        })?;
 
-    let cipher = sender_keys
-        .get(&key_id)
-        .ok_or_else(|| anyhow!("Unknown key ID {} for sender {}", key_id, sender_public_key_hash_hex))?;
+    let cipher = sender_keys.get(&key_id).ok_or_else(|| {
+        anyhow!(
+            "Unknown key ID {} for sender {}",
+            key_id,
+            sender_public_key_hash_hex
+        )
+    })?;
 
     if nonce_bytes.len() != 12 {
         bail!("Invalid nonce length");
@@ -134,16 +143,18 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
 
     // Create the Sha256 hash of the sender's public key
     // This is used to identify the sender in messages
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(my_identity.verifying_key.as_bytes());
-    let sender_public_key_hash = hasher.finalize().to_vec();
-    debug!(
-        "Sender public key hash (SHA256): {:?}",
+    // let mut hasher = sha2::Sha256::default();
+    // hasher.update(my_identity.verifying_key.as_bytes());
+    // let sender_public_key_hash = hasher.finalize().to_vec();
+    let sender_public_key_hash = hex::encode(my_identity.verifying_key.as_bytes());
+    // Log the public key hash in hex format for easier reading
+    info!(
+        "Sender public key hash (SHA256) in hex: {}",
         sender_public_key_hash
     );
     // Create the EncryptedMessage without the signature first
     let mut encrypted_msg = crate::chat_message::EncryptedMessage {
-        sender_public_key_hash,
+        sender_public_key_hash: my_identity.verifying_key.as_bytes().to_vec(),
         key_id: my_identity.current_key_id,
         encrypted_payload,
         nonce,
@@ -166,8 +177,8 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
 /// Basically we mash everything together in a specific order.
 /// Exclude the signature field itself.
 /// A hasher masher! :)
-fn create_signable_data(msg: &EncryptedMessage) -> Vec<u8> {
-    let mut hasher = sha2::Sha256::new();
+fn create_signable_encrypted_message(msg: &EncryptedMessage) -> Vec<u8> {
+    let mut hasher = sha2::Sha256::default();
 
     // Hash all fields in a specific order (excluding signature)
     hasher.update(&msg.key_id.to_le_bytes());
@@ -180,7 +191,7 @@ fn create_signable_data(msg: &EncryptedMessage) -> Vec<u8> {
 /// Signs an EncryptedMessage and returns the signature
 pub fn sign_message(msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>> {
     // Create the data to sign by concatenating all fields
-    let data_to_sign = create_signable_data(msg);
+    let data_to_sign = create_signable_encrypted_message(msg);
 
     // Sign the data
     let signature = my_identity.signing_key.sign(&data_to_sign);
@@ -188,98 +199,87 @@ pub fn sign_message(msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<
     Ok(signature.to_bytes().to_vec())
 }
 
-/// Generate a SHA256 hash of the verifying (public) key.
+/// Generate a SHA256 hash as a hex string of the verifying (public) key.
 /// This is used to identify the sender in messages.
-pub fn get_sender_public_key_hash_as_hex(sender_public_key_hash: &[u8]) -> String {
+pub fn get_public_key_hash_as_hex_string(public_key_as_bytes: &[u8]) -> String {
     // NOTE: it's not safe to directly convert the raw hash bytes (Vec<u8>) to a String.
     // This is because a Rust String is required to be valid UTF-8,
     // but the raw bytes of a SHA-256 hash are arbitrary binary data and have no guarantee of forming a valid UTF-8 sequence.
     // Attempting a direct conversion will either fail or corrupt the data.
     //
     // But hex is totes awesome for this purpose. :)
-    hex::encode(&sender_public_key_hash)
+    hex::encode(&public_key_as_bytes)
 }
 
-// // Create encrypted sender key for a specific recipient
-// pub fn create_key_distribution(
-//     my_identity: &MyIdentity,
-//     peer_identity: &PeerIdentity,
-//     recipient_id: &str,
-// ) -> Result<ChatPacket> {
-//     let recipient_x25519_public = peer_identity
-//         .peer_x25519_keys
-//         .get(recipient_id)
-//         .ok_or_else(|| anyhow!("Unknown recipient: {}", recipient_id))?;
+// Create encrypted sender key for a specific recipient
+pub fn create_key_distribution(
+    my_identity: &MyIdentity,
+    peer_identity: &PeerIdentity,
+    recipient_id: &str, // recipient's public key hash in hex string format
+) -> Result<ChatPacket> {
+    let recipient_x25519_public = peer_identity
+        .peer_x25519_keys
+        .get(recipient_id)
+        .ok_or_else(|| anyhow!("Unknown recipient: {}", recipient_id))?;
 
-//     // Perform ECDH to get shared secret
-//     let shared_secret = my_identity
-//         .x25519_secret_key
-//         .diffie_hellman(recipient_x25519_public);
+    // Perform ECDH to get shared secret
+    let shared_secret = my_identity
+        .x25519_secret_key
+        .diffie_hellman(recipient_x25519_public);
 
-//     // Use shared secret as encryption key
-//     let key = Key::from_slice(shared_secret.as_bytes());
-//     let cipher = ChaCha20Poly1305::new(key);
+    // Use shared secret as encryption key
+    let key = Key::from_slice(shared_secret.as_bytes());
+    let cipher = ChaCha20Poly1305::new(key);
 
-//     let (_, sender_key_bytes) = my_identity
-//         .get_sender_key()
-//         .ok_or_else(|| anyhow!("No current sender key"))?;
+    let (_, sender_key_bytes) = my_identity
+        .get_sender_key()
+        .ok_or_else(|| anyhow!("No current sender key"))?;
 
-//     let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng);
-//     let encrypted_key = cipher
-//         .encrypt(&nonce, sender_key_bytes.as_ref())
-//         .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng);
+    let encrypted_key = cipher
+        .encrypt(&nonce, sender_key_bytes.as_ref())
+        .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
 
-//     let key_dist = chat_message::KeyDistribution {
-//         sender_id: my_identity.my_sender_id.to_string(),
-//         key_id: my_identity.current_key_id,
-//         encrypted_sender_key: encrypted_key,
-//         recipient_id: recipient_id.to_string(),
-//     };
-//     Ok(ChatPacket {
-//         packet_type: Some(PacketType::KeyDist(key_dist)),
-//     })
+    let key_dist = chat_message::KeyDistribution {
+        sender_public_key_hash: my_identity.verifying_key.as_bytes().to_vec(),
+        key_id: my_identity.current_key_id,
+        encrypted_sender_key: encrypted_key,
+        recipient_public_key_hash: recipient_x25519_public.as_bytes().to_vec(),
+    };
+    Ok(ChatPacket {
+        packet_type: Some(PacketType::KeyDist(key_dist)),
+    })
 
-//     // Prepend nonce to encrypted key
-//     // let mut result = nonce.to_vec();
-//     // result.extend_from_slice(&encrypted_key);
-//     // Ok(result)
-// }
+    // Prepend nonce to encrypted key
+    // let mut result = nonce.to_vec();
+    // result.extend_from_slice(&encrypted_key);
+    // Ok(result)
+}
 
 // /// Create a key distribution packet to share a new sender key with a peer
-// pub async fn distribute_sender_key(
-//     my_identity: &MyIdentity,
-//     peer_identity: &PeerIdentity,
-// ) -> Result<()> {
-//     for peer_id in peer_identity.list_known_peers() {
-//         match create_key_distribution(peer_id) {
-//             Ok(encrypted_key) => {
-//                 let key_dist = KeyDistribution {
-//                     sender_id: self.crypto.our_user_id().to_string(),
-//                     key_id: self.crypto.current_key_id(),
-//                     encrypted_sender_key: encrypted_key,
-//                     recipient_id: peer_id.clone(),
-//                 };
+pub async fn distribute_sender_key(
+    my_identity: &MyIdentity,
+    peer_identity: &PeerIdentity,
+) -> Result<Vec<ChatPacket>> {
+    let mut packets_to_send = Vec::new();
+    for recipient_public_key_hash in peer_identity.list_known_peers() {
+        match create_key_distribution(my_identity, peer_identity, recipient_public_key_hash) {
+            Ok(kd_packet) => {
+                // Add this packet to the list to send
+                debug!(
+                    "Created key distribution for recipient {}",
+                    recipient_public_key_hash
+                );
+                packets_to_send.push(kd_packet);
+            }
+            Err(e) => {
+                eprintln!(
+                    "Failed to create key distribution for {}: {}",
+                    recipient_public_key_hash, e
+                );
+            }
+        }
+    }
 
-//                 let packet = ChatPacket {
-//                     packet_type: Some(chat_packet::PacketType::KeyDist(key_dist)),
-//                 };
-
-//                 let packet_bytes = packet.encode_to_vec();
-//                 self.socket
-//                     .send_to(&packet_bytes, self.multicast_addr)
-//                     .await?;
-//             }
-//             Err(e) => {
-//                 eprintln!("Failed to create key distribution for {}: {}", peer_id, e);
-//             }
-//         }
-//     }
-
-//     if !self.crypto.list_known_peers().is_empty() {
-//         println!(
-//             "Distributed sender key to {} peers",
-//             self.crypto.list_known_peers().len()
-//         );
-//     }
-//     Ok(())
-// }
+    Ok(packets_to_send)
+}

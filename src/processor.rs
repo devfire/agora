@@ -1,6 +1,9 @@
 use crate::{
     chat_message::{PlaintextPayload, chat_packet::PacketType},
-    crypto::{ReceivedMessage, create_encrypted_chat_packet, get_sender_public_key_hash_as_hex},
+    crypto::{
+        ReceivedMessage, create_encrypted_chat_packet, distribute_sender_key,
+        get_public_key_hash_as_hex_string,
+    },
     identity::{MyIdentity, PeerIdentity},
     network,
 };
@@ -98,6 +101,10 @@ impl Processor {
                                             announcement.display_name
                                         );
 
+                                        // NOTE: Loopback is disabled at the socket level, so we should not receive our own announcements.
+                                        // However, as a safety measure, we will still check if the announcement is from ourselves
+                                        // Also this is mega cool.
+                                        //
                                         // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
                                         // Since we are comparing cryptographic key material, it's crucial to avoid any timing discrepancies that could leak information about the key.
                                         // A standard equality check (==) is not safe for this purpose because it "short-circuits" (lol) it returns false as soon as it finds a mismatch.
@@ -139,6 +146,12 @@ impl Processor {
                                             "Current peers: {:?}",
                                             peer_identity.peer_x25519_keys.keys()
                                         );
+
+                                        // Distribute sender key to the new peer
+                                        distribute_sender_key(&my_identity, &peer_identity)
+                                            .await
+                                            .expect("Failed to distribute sender key");
+
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
                                             display_name: announcement.display_name.clone(),
@@ -172,7 +185,7 @@ impl Processor {
                                     Some(PacketType::KeyDist(key_dist)) => {
                                         info!("Received KeyDistribution packet");
                                         // First, let's convert the sender_public_key_hash to hex string for lookup
-                                        let sender_key_hash_hex = get_sender_public_key_hash_as_hex(
+                                        let sender_key_hash_hex = get_public_key_hash_as_hex_string(
                                             &key_dist.sender_public_key_hash,
                                         );
                                         debug!(
@@ -252,18 +265,11 @@ impl Processor {
                                 debug!("Received PlaintextPayload: {:?}", payload);
                                 // Forward the plaintext payload to the message display task
                                 // Filter messages sent by self
-                                if payload.display_name != chat_id {
-                                    debug!("Forwarding message from '{}'", payload.display_name);
-                                    message_sender
-                                        .send(payload.clone())
-                                        .await
-                                        .expect("Failed to send message");
-                                } else {
-                                    debug!(
-                                        "Ignoring self-sent message from '{}'",
-                                        payload.display_name
-                                    );
-                                }
+                                debug!("Forwarding message from '{}'", payload.display_name);
+                                message_sender
+                                    .send(payload.clone())
+                                    .await
+                                    .expect("Failed to send message");
                             } // ReceivedMessage::PeerSenderKey(peer_sender_key) => {
 
                               //     // Get the hex String of SHA256 Public key
@@ -307,6 +313,9 @@ impl Processor {
 
                 match readline {
                     Ok(line) => {
+                        if line.is_empty() {
+                            continue; // Ignore empty lines
+                        }
                         rustyline_editor
                             .add_history_entry(line.as_str())
                             .expect("Adding to history failed");
