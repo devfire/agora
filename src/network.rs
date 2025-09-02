@@ -73,6 +73,9 @@ impl NetworkManager {
         // Enable SO_REUSEADDR to allow multiple agents on the same machine
         socket.set_reuse_address(true)?;
 
+        // Disable loopback so we don't receive our own messages
+        socket.set_multicast_loop_v4(false)?;
+
         // On Unix systems, also set SO_REUSEPORT if available
         #[cfg(unix)]
         {
