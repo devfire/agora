@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs, path::Path};
 use anyhow::{Context, Result, anyhow};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-
+use sha2::Digest;
 use ssh_key::PrivateKey;
 use tracing::{error, info};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
@@ -58,7 +58,14 @@ impl PeerIdentity {
         let verifying_key = VerifyingKey::from_bytes(&ed25519_array)?;
 
         // let's create the SHA256 hash of the verifying (public) key to use as the peer ID
-        let sender_public_key_hash = get_public_key_hash_as_hex_string(verifying_key.as_bytes());
+        let mut hasher = sha2::Sha256::default();
+        hasher.update(verifying_key.as_bytes());
+        let sender_public_key_sha256 = hasher.finalize().to_vec();
+        let sender_public_key_hash = get_public_key_hash_as_hex_string(&sender_public_key_sha256);
+        if self.peer_x25519_keys.contains_key(&sender_public_key_hash) {
+            info!("Peer key {} already exists, skipping", sender_public_key_hash);
+            return Ok(());
+        }
         self.peer_x25519_keys
             .insert(sender_public_key_hash.clone(), x25519_public);
         self.peer_verifying_keys
@@ -179,7 +186,9 @@ impl MyIdentity {
         let x25519_public_key = X25519PublicKey::from(&x25519_secret_key);
 
         // let's create the SHA256 hash of the verifying (public) key
-        let sender_public_key_hash = hex::encode(verifying_key.as_bytes());
+        let mut hasher = sha2::Sha256::default();
+        hasher.update(verifying_key.as_bytes());
+        let sender_public_key_hash = hex::encode(hasher.finalize().to_vec());
         info!(
             "Loaded identity '{}', sender_public_key_hash {}",
             display_name, sender_public_key_hash
@@ -227,10 +236,9 @@ impl MyIdentity {
     }
 
     // /// Return a binary Vec SHA256 hash of our Ed25519 public key
-    // pub fn get_my_public_key_hash_as_bytes(&self) -> Vec<u8> {
-    //     use sha2::Digest;
-    //     let mut hasher = sha2::Sha256::default();
-    //     hasher.update(self.verifying_key.as_bytes());
-    //     hasher.finalize().to_vec()
-    // }
+    pub fn get_my_verifying_key_sha256hash_as_bytes(&self) -> Vec<u8> {
+        let mut hasher = sha2::Sha256::default();
+        hasher.update(self.verifying_key.as_bytes());
+        hasher.finalize().to_vec()
+    }
 }

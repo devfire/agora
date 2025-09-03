@@ -146,15 +146,15 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
     // let mut hasher = sha2::Sha256::default();
     // hasher.update(my_identity.verifying_key.as_bytes());
     // let sender_public_key_hash = hasher.finalize().to_vec();
-    let sender_public_key_hash = hex::encode(my_identity.verifying_key.as_bytes());
+
     // Log the public key hash in hex format for easier reading
     info!(
         "Sender public key hash (SHA256) in hex: {}",
-        sender_public_key_hash
+        hex::encode(my_identity.get_my_verifying_key_sha256hash_as_bytes())
     );
     // Create the EncryptedMessage without the signature first
     let mut encrypted_msg = crate::chat_message::EncryptedMessage {
-        sender_public_key_hash: my_identity.verifying_key.as_bytes().to_vec(),
+        sender_public_key_hash: my_identity.get_my_verifying_key_sha256hash_as_bytes(),
         key_id: my_identity.current_key_id,
         encrypted_payload,
         nonce,
