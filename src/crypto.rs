@@ -19,8 +19,11 @@ pub enum CryptoError {
     #[error("Unknown sender: {sender_hash}")]
     UnknownSender { sender_hash: String },
 
-    #[error("Unknown key ID {key_id} for sender {sender_hash}")]
-    UnknownKeyId { key_id: u32, sender_hash: String },
+    #[error("Unknown key ID {key_id} for sender {sender_public_key_hash_hex}")]
+    UnknownKeyId {
+        key_id: u32,
+        sender_public_key_hash_hex: String,
+    },
 
     #[error("Decryption failed: {reason}")]
     DecryptionFailed { reason: String },
@@ -135,13 +138,12 @@ pub fn decrypt_message(
             sender_hash: sender_public_key_hash_hex.to_string(),
         })?;
 
-    let cipher = sender_keys.get(&key_id).ok_or_else(|| {
-        anyhow!(
-            "Unknown key ID {} for sender {}",
+    let cipher = sender_keys
+        .get(&key_id)
+        .ok_or_else(|| CryptoError::UnknownKeyId {
             key_id,
-            sender_public_key_hash_hex
-        )
-    })?;
+            sender_public_key_hash_hex: sender_public_key_hash_hex.to_string(),
+        })?;
 
     if nonce_bytes.len() != 12 {
         bail!("Invalid nonce length");
