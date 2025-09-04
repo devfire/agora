@@ -34,8 +34,12 @@ message ChatPacket {
 
     // Actual encrypted chat message
     EncryptedMessage encrypted_msg = 3;
+
+    // Request for public key when unknown sender detected
+    PublicKeyRequest public_key_request = 4;  // NEW
   }
 }
+
 
 // =============================================================================
 // PUBLIC KEY MANAGEMENT
@@ -96,6 +100,26 @@ message EncryptedMessage {
   // Ed25519 signature over hash of (sender_id + key_id + encrypted_payload + nonce)
   // 64 bytes - proves sender owns the private key corresponding to their announced public key
   bytes signature = 5;
+}
+
+// =============================================================================
+// PUBLIC KEY REQUEST
+// =============================================================================
+
+// PublicKeyRequest: Request a peer's public key when sender_public_key_hash is unknown
+// Sent when receiving messages from unrecognized senders
+message PublicKeyRequest {
+  // SHA-256 hash of the unknown Ed25519 public key we need
+  // This allows peers to identify which key is being requested
+  bytes requested_public_key_hash = 1;
+
+  // Optional: Requester's own public key hash for response routing
+  // Allows the responder to know who to send the PublicKeyAnnouncement to
+  bytes requester_public_key_hash = 2;
+
+  // Optional: Unix timestamp of when request was made
+  // Helps prevent replay attacks and allows for request expiration
+  uint64 timestamp = 3;
 }
 
 // =============================================================================

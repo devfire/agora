@@ -1,6 +1,3 @@
-use core::hash;
-use std::os::linux::raw;
-
 use chacha20poly1305::{
     AeadCore, ChaCha20Poly1305, Key, KeyInit,
     aead::{Aead, OsRng as ChaChaOsRng},
@@ -14,6 +11,28 @@ use sha2::Digest;
 
 use ed25519_dalek::Signer;
 use x25519_dalek::PublicKey;
+
+use thiserror::Error;
+
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum CryptoError {
+    #[error("Unknown sender: {sender_hash}")]
+    UnknownSender { sender_hash: String },
+
+    #[error("Unknown key ID {key_id} for sender {sender_hash}")]
+    UnknownKeyId { key_id: u32, sender_hash: String },
+
+    #[error("Decryption failed: {reason}")]
+    DecryptionFailed { reason: String },
+
+    #[error("Invalid signature")]
+    InvalidSignature,
+
+    #[error("Invalid message format")]
+    InvalidFormat,
+}
+
+pub type CryptoResult<T> = Result<T, CryptoError>;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
@@ -112,11 +131,8 @@ pub fn decrypt_message(
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_public_key_hash_hex)
-        .ok_or_else(|| {
-            anyhow!(
-                "From decrypt_message(): Unknown sender: {}",
-                sender_public_key_hash_hex
-            )
+        .ok_or_else(|| CryptoError::UnknownSender {
+            sender_hash: sender_public_key_hash_hex.to_string(),
         })?;
 
     let cipher = sender_keys.get(&key_id).ok_or_else(|| {
@@ -153,6 +169,8 @@ pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPac
         packet_type: Some(PacketType::PublicKey(announcement)),
     }
 }
+
+// pub async fn create_public_key_request()
 
 pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> Result<ChatPacket> {
     tracing::debug!("Creating encrypted chat packet with content: {}", content);

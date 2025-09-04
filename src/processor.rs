@@ -318,6 +318,9 @@ impl Processor {
                     }
                     Err(e) => {
                         error!("Error receiving message: {}", e);
+
+                        // Assuming it's because we don't have the sender's public key, let's ask
+                        
                     }
                 }
             }

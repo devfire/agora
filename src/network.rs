@@ -184,6 +184,13 @@ impl NetworkManager {
                 // // Return the sender key to the processor for updating peer_identity
                 // return Ok(peer_sender_key);
             }
+
+            Some(PacketType::PublicKeyRequest(pk_request)) => {
+                // For now, let's just ship it upstream to processor.rs
+                let pk_request_packet = ChatPacket{packet_type: Some(PacketType::PublicKeyRequest(pk_request))};
+
+                Ok(ReceivedMessage::ChatPacket(pk_request_packet))
+            }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                 // Convert the sender public key hash to hex string for lookup
                 let peer_sender_public_key_as_hex_string =
