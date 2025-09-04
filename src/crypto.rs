@@ -152,7 +152,7 @@ pub fn decrypt_message(
     let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
     let decrypted_bytes = cipher
         .decrypt(nonce, encrypted_payload)
-        .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+        .map_err(|_| CryptoError::InvalidFormat)?;
 
     let payload = PlaintextPayload::decode(decrypted_bytes.as_slice())?;
     Ok(payload)
