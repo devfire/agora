@@ -1,7 +1,7 @@
 use crate::{
     chat_message::{PlaintextPayload, chat_packet::PacketType},
     crypto::{
-        ReceivedMessage, create_encrypted_chat_packet, distribute_sender_key,
+        ReceivedMessage, create_encrypted_chat_packet, create_sender_key_distribution,
         get_public_key_hash_as_hex_string,
     },
     identity::{MyIdentity, PeerIdentity},
@@ -147,10 +147,20 @@ impl Processor {
                                             peer_identity.peer_x25519_keys.keys()
                                         );
 
-                                        // Distribute sender key to the new peer
-                                        distribute_sender_key(&my_identity, &peer_identity)
+                                        // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
+
+                                        let kd_packet = create_sender_key_distribution(
+                                            &announcement,
+                                            &my_identity,
+                                            // &peer_identity,
+                                        )
+                                        .expect("Failed to distribute sender key");
+
+                                        // We have the key distribution, send it.
+                                        network_manager
+                                            .send_message(kd_packet)
                                             .await
-                                            .expect("Failed to distribute sender key");
+                                            .expect("Failed to send KeyDistribution packet");
 
                                         // Now, let's create a PlaintextPayload to announce the new user
                                         let payload = PlaintextPayload {
@@ -183,67 +193,89 @@ impl Processor {
                                         }
                                     }
                                     Some(PacketType::KeyDist(key_dist)) => {
-                                        info!("Received KeyDistribution packet");
                                         // First, let's convert the sender_public_key_hash to hex string for lookup
                                         let sender_key_hash_hex = get_public_key_hash_as_hex_string(
                                             &key_dist.sender_public_key_hash,
                                         );
-                                        debug!(
-                                            "KeyDist from sender_public_key_hash: {}",
-                                            sender_key_hash_hex
-                                        );
-                                        let sender_x25519_public = peer_identity
-                                            .peer_x25519_keys
-                                            .get(&sender_key_hash_hex)
-                                            .ok_or_else(|| {
-                                                error!("Unknown sender: {}", sender_key_hash_hex)
-                                            })
-                                            .expect("Failed to get the peer public key.");
 
-                                        if key_dist.encrypted_sender_key.len() < 12 {
-                                            error!("Encrypted data too short");
-                                            continue;
+                                        let recipient_key_hash_hex =
+                                            get_public_key_hash_as_hex_string(
+                                                &key_dist.recipient_public_key_hash,
+                                            );
+
+                                        if sender_key_hash_hex
+                                            == get_public_key_hash_as_hex_string(
+                                                &my_identity
+                                                    .get_my_verifying_key_sha256hash_as_bytes(),
+                                            )
+                                        {
+                                            info!("Oh, this is me talking to myself, skipping.")
+                                        } else {
+                                            info!(
+                                                "Received KeyDistribution packet:{:?} from: {} to: {}",
+                                                key_dist,
+                                                sender_key_hash_hex,
+                                                recipient_key_hash_hex
+                                            );
+
+                                            // Lookup the sender's x25519 public key in peer_identity
+                                            let sender_x25519_public = peer_identity
+                                                .peer_x25519_keys
+                                                .get(&sender_key_hash_hex)
+                                                .ok_or_else(|| {
+                                                    error!(
+                                                        "Unknown sender: {}",
+                                                        sender_key_hash_hex
+                                                    )
+                                                })
+                                                .expect("Failed to get the peer public key.");
+
+                                            if key_dist.encrypted_sender_key.len() < 12 {
+                                                error!("Encrypted data too short");
+                                                continue;
+                                            }
+
+                                            // Extract nonce and encrypted key
+                                            let (nonce_bytes, encrypted_key) =
+                                                key_dist.encrypted_sender_key.split_at(12);
+                                            let nonce =
+                                                chacha20poly1305::Nonce::from_slice(nonce_bytes);
+
+                                            // Perform ECDH to get shared secret
+                                            let shared_secret = my_identity
+                                                .x25519_secret_key
+                                                .diffie_hellman(sender_x25519_public);
+
+                                            // Use shared secret as decryption key
+                                            let key = chacha20poly1305::Key::from_slice(
+                                                shared_secret.as_bytes(),
+                                            );
+                                            let cipher = ChaCha20Poly1305::new(key);
+
+                                            let decrypted_key = cipher
+                                                .decrypt(nonce, encrypted_key)
+                                                .map_err(|e| {
+                                                    error!(
+                                                        "Creating the decrypted_key failed: {}",
+                                                        e
+                                                    )
+                                                })
+                                                .expect("Failed to decrypt the sender key.");
+
+                                            if decrypted_key.len() != 32 {
+                                                error!("Invalid sender key length");
+                                            }
+
+                                            let sender_key = Key::from_slice(&decrypted_key);
+                                            let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                                            // Add the key to peer_identity
+                                            peer_identity
+                                                .peer_sender_keys
+                                                .entry(sender_key_hash_hex.clone())
+                                                .or_insert_with(std::collections::HashMap::new)
+                                                .insert(key_dist.key_id, sender_cipher);
                                         }
-
-                                        // Extract nonce and encrypted key
-                                        let (nonce_bytes, encrypted_key) =
-                                            key_dist.encrypted_sender_key.split_at(12);
-                                        let nonce =
-                                            chacha20poly1305::Nonce::from_slice(nonce_bytes);
-
-                                        // Perform ECDH to get shared secret
-                                        let shared_secret = my_identity
-                                            .x25519_secret_key
-                                            .diffie_hellman(sender_x25519_public);
-
-                                        // Use shared secret as decryption key
-                                        let key = chacha20poly1305::Key::from_slice(
-                                            shared_secret.as_bytes(),
-                                        );
-                                        let cipher = ChaCha20Poly1305::new(key);
-
-                                        let decrypted_key = cipher
-                                            .decrypt(nonce, encrypted_key)
-                                            .map_err(|e| {
-                                                error!("Creating the decrypted_key failed: {}", e)
-                                            })
-                                            .expect("Failed to decrypt the sender key.");
-
-                                        if decrypted_key.len() != 32 {
-                                            error!("Invalid sender key length");
-                                        }
-
-                                        let sender_key = Key::from_slice(&decrypted_key);
-                                        let sender_cipher = ChaCha20Poly1305::new(sender_key);
-
-                                        // Add the key to peer_identity
-                                        peer_identity
-                                            .peer_sender_keys
-                                            .entry(sender_key_hash_hex.clone())
-                                            .or_insert_with(std::collections::HashMap::new)
-                                            .insert(key_dist.key_id, sender_cipher);
-
-                                        // Handle KeyDistribution if needed
                                     }
 
                                     // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload

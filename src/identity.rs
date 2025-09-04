@@ -19,6 +19,17 @@ pub struct PeerIdentity {
     pub peer_sender_keys: HashMap<String, HashMap<u32, ChaCha20Poly1305>>,
 }
 
+// Implement Debug for PeerIdentity
+impl std::fmt::Debug for PeerIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerIdentity")
+            .field("peer_x25519_keys", &self.peer_x25519_keys.keys())
+            .field("peer_verifying_keys", &self.peer_verifying_keys.keys())
+            .field("peer_sender_keys", &self.peer_sender_keys.keys())
+            .finish()
+    }
+}
+
 impl PeerIdentity {
     pub fn new() -> Self {
         Self {
@@ -63,14 +74,20 @@ impl PeerIdentity {
         let sender_public_key_sha256 = hasher.finalize().to_vec();
         let sender_public_key_hash = get_public_key_hash_as_hex_string(&sender_public_key_sha256);
         if self.peer_x25519_keys.contains_key(&sender_public_key_hash) {
-            info!("Peer key {} already exists, skipping", sender_public_key_hash);
+            info!(
+                "Peer key {} already exists, skipping",
+                sender_public_key_hash
+            );
             return Ok(());
         }
         self.peer_x25519_keys
             .insert(sender_public_key_hash.clone(), x25519_public);
         self.peer_verifying_keys
             .insert(sender_public_key_hash.clone(), verifying_key);
-        info!("Added peer key {} successfully", sender_public_key_hash);
+        info!(
+            "Added peer keys from {} successfully",
+            sender_public_key_hash
+        );
         Ok(())
     }
 
@@ -78,9 +95,14 @@ impl PeerIdentity {
         self.peer_x25519_keys.get(sender_public_key_hash)
     }
 
-    pub fn list_known_peers(&self) -> Vec<&String> {
-        self.peer_x25519_keys.keys().collect()
+    pub fn get_peer_verifying_key(&self, sender_public_key_hash: &str) -> Option<&VerifyingKey> {
+        self.peer_verifying_keys.get(sender_public_key_hash)
     }
+
+    // pub fn list_known_peers(&self) -> Vec<&String> {
+    //     info!("Listing {:?} known peers", self.peer_x25519_keys);
+    //     self.peer_x25519_keys.keys().collect()
+    // }
 }
 
 /// SecureIdentity manages our cryptographic identity using an Ed25519 SSH key for signing

@@ -1,3 +1,6 @@
+use core::hash;
+use std::os::linux::raw;
+
 use chacha20poly1305::{
     AeadCore, ChaCha20Poly1305, Key, KeyInit,
     aead::{Aead, OsRng as ChaChaOsRng},
@@ -10,6 +13,7 @@ use tracing::{debug, info};
 use sha2::Digest;
 
 use ed25519_dalek::Signer;
+use x25519_dalek::PublicKey;
 
 /// We can get either a ChatPacket or a decrypted PlaintextPayload
 /// This enum helps distinguish between the two types of received messages
@@ -66,7 +70,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     // Get the ChaCha20Poly1305 cipher from the tuple
     let (cypher, _) = sender_key_tuple;
 
-    tracing::debug!("Using sender key ID {}", identity.current_key_id);
+    tracing::info!("Using sender key ID {}", identity.current_key_id);
 
     let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng); // 96-bits; unique per message
 
@@ -92,6 +96,19 @@ pub fn decrypt_message(
     nonce_bytes: &[u8],
     peer_identity: &PeerIdentity,
 ) -> Result<PlaintextPayload> {
+    info!(
+        "Decrypting message from sender_public_key_hash: {}, key_id: {}, peer_identity: {:?}",
+        sender_public_key_hash_hex, key_id, peer_identity
+    );
+    // Look up the sender's cipher using their public key hash
+    // let sender_keys = peer_identity
+    //     .get_peer_verifying_key(sender_public_key_hash_hex)
+    //     .ok_or_else(|| {
+    //         anyhow!(
+    //             "From decrypt_message(): Unknown sender: {}",
+    //             sender_public_key_hash_hex
+    //         )
+    //     })?;
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_public_key_hash_hex)
@@ -188,6 +205,13 @@ fn create_signable_encrypted_message(msg: &EncryptedMessage) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+fn create_sha256(raw_bytes: &Vec<u8>) -> Vec<u8> {
+    let mut hasher = sha2::Sha256::default();
+
+    hasher.update(&raw_bytes);
+    hasher.finalize().to_vec()
+}
+
 /// Signs an EncryptedMessage and returns the signature
 pub fn sign_message(msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>> {
     // Create the data to sign by concatenating all fields
@@ -212,20 +236,44 @@ pub fn get_public_key_hash_as_hex_string(public_key_as_bytes: &[u8]) -> String {
 }
 
 // Create encrypted sender key for a specific recipient
-pub fn create_key_distribution(
+pub fn create_sender_key_distribution(
+    announcement: &PublicKeyAnnouncement,
     my_identity: &MyIdentity,
-    peer_identity: &PeerIdentity,
-    recipient_id: &str, // recipient's public key hash in hex string format
+    // peer_identity: &PeerIdentity,
 ) -> Result<ChatPacket> {
-    let recipient_x25519_public = peer_identity
-        .peer_x25519_keys
-        .get(recipient_id)
-        .ok_or_else(|| anyhow!("Unknown recipient: {}", recipient_id))?;
+    // Let's create the hex string of the sha256 of the peer's public ed25519 key
+    // let my_hex_public_key_string = get_public_key_hash_as_hex_string(&create_sha256(
+    //     &my_identity.verifying_key.as_bytes().to_vec(),
+    // ));
+
+    // let recipient_x25519_public = peer_identity
+    //     .peer_x25519_keys
+    //     .get(&my_hex_public_key_string)
+    //     .ok_or_else(|| {
+    //         anyhow!(
+    //             "From create_key_distribution(): unknown recipient: {}",
+    //             my_hex_public_key_string
+    //         )
+    //     })?;
+
+    // The PublicKey struct in x25519-dalek implements From<[u8; 32]>, which allows direct conversion from a 32-byte array.
+    // Therefore, the Vec<u8> must first be converted into a fixed-size array.
+    // We gotta make sure it's exactly 32 bytes long.
+    if announcement.x25519_public_key.len() != 32 {
+        bail!("Input Vec<u8> must be exactly 32 bytes long to form a valid PublicKey.");
+    }
+
+    // OK now we convert the key to a 32 byte fixed array
+    let x25519_public_key_bytes: [u8; 32] = announcement
+        .x25519_public_key
+        .clone()
+        .try_into()
+        .map_err(|_| anyhow!("Failed to convert Vec<u8> to [u8; 32]"))?;
 
     // Perform ECDH to get shared secret
     let shared_secret = my_identity
         .x25519_secret_key
-        .diffie_hellman(recipient_x25519_public);
+        .diffie_hellman(&PublicKey::from(x25519_public_key_bytes));
 
     // Use shared secret as encryption key
     let key = Key::from_slice(shared_secret.as_bytes());
@@ -241,11 +289,18 @@ pub fn create_key_distribution(
         .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
 
     let key_dist = chat_message::KeyDistribution {
-        sender_public_key_hash: my_identity.verifying_key.as_bytes().to_vec(),
+        sender_public_key_hash: create_sha256(&my_identity.verifying_key.as_bytes().to_vec()),
         key_id: my_identity.current_key_id,
         encrypted_sender_key: encrypted_key,
-        recipient_public_key_hash: recipient_x25519_public.as_bytes().to_vec(),
+        recipient_public_key_hash: create_sha256(&x25519_public_key_bytes.to_vec()),
     };
+
+    info!(
+        "Created Sender Key Distribution: sender: {} recipient: {}",
+        get_public_key_hash_as_hex_string(&key_dist.sender_public_key_hash),
+        get_public_key_hash_as_hex_string(&key_dist.recipient_public_key_hash)
+    );
+
     Ok(ChatPacket {
         packet_type: Some(PacketType::KeyDist(key_dist)),
     })
@@ -257,29 +312,62 @@ pub fn create_key_distribution(
 }
 
 // /// Create a key distribution packet to share a new sender key with a peer
-pub async fn distribute_sender_key(
-    my_identity: &MyIdentity,
-    peer_identity: &PeerIdentity,
-) -> Result<Vec<ChatPacket>> {
-    let mut packets_to_send = Vec::new();
-    for recipient_public_key_hash in peer_identity.list_known_peers() {
-        match create_key_distribution(my_identity, peer_identity, recipient_public_key_hash) {
-            Ok(kd_packet) => {
-                // Add this packet to the list to send
-                debug!(
-                    "Created key distribution for recipient {}",
-                    recipient_public_key_hash
-                );
-                packets_to_send.push(kd_packet);
-            }
-            Err(e) => {
-                eprintln!(
-                    "Failed to create key distribution for {}: {}",
-                    recipient_public_key_hash, e
-                );
-            }
-        }
-    }
+// pub async fn distribute_sender_key(
+//     announcement: &PublicKeyAnnouncement,
+//     my_identity: &MyIdentity,
+//     peer_identity: &PeerIdentity,
+// ) -> Result<Vec<ChatPacket>> {
+//     let mut packets_to_send = Vec::new();
+//     for recipient_public_key_hash in peer_identity.get_peer_verifying_key() {
+//         info!(
+//             "Creating key distribution for recipient {}",
+//             recipient_public_key_hash
+//         );
 
-    Ok(packets_to_send)
-}
+//         // First, check to make sure we have not sent to this recipient before
+//         if let Some(new_recipient) = peer_identity. {
+
+//         }
+//         match create_key_distribution(my_identity, peer_identity, recipient_public_key_hash) {
+//             Ok(kd_packet) => {
+//                 // Add this packet to the list to send
+//                 info!(
+//                     "Created key distribution for recipient {}",
+//                     recipient_public_key_hash
+//                 );
+
+//                 packets_to_send.push(kd_packet);
+//             }
+//             Err(e) => {
+//                 eprintln!(
+//                     "Failed to create key distribution for {}: {}",
+//                     recipient_public_key_hash, e
+//                 );
+//             }
+//         }
+//     }
+
+//     Ok(packets_to_send)
+// }
+
+// /// Verify a signed message
+// pub fn verify_message(&self, msg: &EncryptedMessage) -> Result<bool, Box<dyn std::error::Error>> {
+//     // Get the public key for this sender
+//     let public_key = self.known_keys.get(&msg.sender_id)
+//         .ok_or("Unknown sender")?;
+
+//     // Parse the signature
+//     let signature_bytes: [u8; 64] = msg.signature.as_slice()
+//         .try_into()
+//         .map_err(|_| "Invalid signature length")?;
+//     let signature = Signature::from_bytes(&signature_bytes);
+
+//     // Create the same signable data
+//     let data_to_sign = self.create_signable_data(msg);
+
+//     // Verify the signature
+//     match public_key.verify(&data_to_sign, &signature) {
+//         Ok(()) => Ok(true),
+//         Err(_) => Ok(false),
+//     }
+// }

@@ -186,17 +186,17 @@ impl NetworkManager {
             }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                 // Convert the sender public key hash to hex string for lookup
-                let peer_sender_public_key_hash =
+                let peer_sender_public_key_as_hex_string =
                     get_public_key_hash_as_hex_string(&encrypted_msg.sender_public_key_hash);
 
                 info!(
-                    "Received encrypted message from sender_public_key_hash: {:?}",
-                    peer_sender_public_key_hash
+                    "Received encrypted message from sender_public_key_hash: {}",
+                    peer_sender_public_key_as_hex_string
                 );
 
                 // Handle encrypted message
                 let plaintext = decrypt_message(
-                    &peer_sender_public_key_hash,
+                    &peer_sender_public_key_as_hex_string,
                     encrypted_msg.key_id,
                     &encrypted_msg.encrypted_payload,
                     &encrypted_msg.nonce,
