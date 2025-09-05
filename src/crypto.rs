@@ -1,8 +1,8 @@
 use chacha20poly1305::{
     AeadCore, ChaCha20Poly1305, Key, KeyInit,
-    aead::{Aead, OsRng as ChaChaOsRng},
+    aead::{Aead,OsRng as ChaChaOsRng},
 };
-use prost::Message;
+use prost::{DecodeError, Message};
 
 use anyhow::{Result, anyhow, bail};
 use tracing::{debug, info};
@@ -14,7 +14,7 @@ use x25519_dalek::PublicKey;
 
 use thiserror::Error;
 
-#[derive(Error, Debug, Clone, PartialEq)]
+#[derive(Error, Debug, Clone)]
 pub enum CryptoError {
     #[error("Unknown sender: {sender_hash}")]
     UnknownSender { sender_hash: String },
@@ -25,14 +25,25 @@ pub enum CryptoError {
         sender_public_key_hash_hex: String,
     },
 
-    #[error("Decryption failed: {reason}")]
-    DecryptionFailed { reason: String },
+    #[error("Enryption failed: {reason}")]
+    EncryptionFailed { reason: String },
 
-    #[error("Invalid signature")]
-    InvalidSignature,
+    #[error("Missing my own sender key")]
+    MissingSenderKey,
 
+    // #[error("Invalid signature")]
+    // InvalidSignature,
     #[error("Invalid message format")]
     InvalidFormat,
+
+    #[error("Invalid nonce length")]
+    InvalidNonceLength,
+
+    #[error("System time error")]
+    SystemTimeFailed(#[from] std::time::SystemTimeError),
+
+    #[error("Decode error")]
+    DecodeError(#[from] DecodeError),
 }
 
 pub type CryptoResult<T> = Result<T, CryptoError>;
@@ -59,13 +70,13 @@ pub enum ReceivedMessage {
 // }
 use crate::{
     chat_message::{
-        self, ChatPacket, EncryptedMessage, KeyDistribution, PlaintextPayload,
-        PublicKeyAnnouncement, chat_packet::PacketType,
+        self, ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
+        chat_packet::PacketType,
     },
     identity::{MyIdentity, PeerIdentity},
 };
 
-pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>, Vec<u8>)> {
+pub fn encrypt_message(content: &str, identity: &MyIdentity) -> CryptoResult<(Vec<u8>, Vec<u8>)> {
     tracing::debug!("Encrypting message content: {}", content);
     // Create plaintext payload
     let payload = PlaintextPayload {
@@ -87,7 +98,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     // Remember, SenderKey is a type alias for (ChaCha20Poly1305, [u8; 32]), i.e. a tuple
     let sender_key_tuple = identity
         .get_sender_key()
-        .ok_or_else(|| anyhow!("No current sender key"))?;
+        .ok_or_else(|| CryptoError::MissingSenderKey)?;
 
     // Get the ChaCha20Poly1305 cipher from the tuple
     let (cypher, _) = sender_key_tuple;
@@ -101,7 +112,9 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> Result<(Vec<u8>,
     // Encrypt the payload
     let encrypted_payload = cypher
         .encrypt(&nonce, payload_bytes.as_ref())
-        .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+        .map_err(|e| CryptoError::EncryptionFailed {
+            reason: e.to_string(),
+        })?;
 
     tracing::debug!(
         "Encrypted payload {:?} ({} bytes)",
@@ -117,20 +130,12 @@ pub fn decrypt_message(
     encrypted_payload: &[u8],
     nonce_bytes: &[u8],
     peer_identity: &PeerIdentity,
-) -> Result<PlaintextPayload> {
+) -> CryptoResult<PlaintextPayload> {
     info!(
         "Decrypting message from sender_public_key_hash: {}, key_id: {}, peer_identity: {:?}",
         sender_public_key_hash_hex, key_id, peer_identity
     );
-    // Look up the sender's cipher using their public key hash
-    // let sender_keys = peer_identity
-    //     .get_peer_verifying_key(sender_public_key_hash_hex)
-    //     .ok_or_else(|| {
-    //         anyhow!(
-    //             "From decrypt_message(): Unknown sender: {}",
-    //             sender_public_key_hash_hex
-    //         )
-    //     })?;
+
     let sender_keys = peer_identity
         .peer_sender_keys
         .get(sender_public_key_hash_hex)
@@ -146,7 +151,8 @@ pub fn decrypt_message(
         })?;
 
     if nonce_bytes.len() != 12 {
-        bail!("Invalid nonce length");
+        // bail!("Invalid nonce length");
+        return Err(CryptoError::InvalidNonceLength);
     }
 
     let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);

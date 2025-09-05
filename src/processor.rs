@@ -1,8 +1,8 @@
 use crate::{
     chat_message::{PlaintextPayload, chat_packet::PacketType},
     crypto::{
-        ReceivedMessage, create_encrypted_chat_packet, create_sender_key_distribution,
-        get_public_key_hash_as_hex_string,
+        CryptoError, ReceivedMessage, create_encrypted_chat_packet, create_sender_key_distribution,
+        decrypt_message, get_public_key_hash_as_hex_string,
     },
     identity::{MyIdentity, PeerIdentity},
     network,
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct Processor {
     pub network_manager: Arc<network::NetworkManager>,
@@ -89,238 +89,250 @@ impl Processor {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
             loop {
-                match network_manager.receive_message(&peer_identity).await {
-                    Ok(message) => {
-                        match message {
-                            ReceivedMessage::ChatPacket(packet) => {
-                                debug!("Received ChatPacket: {:?}", packet);
-                                match packet.packet_type {
-                                    Some(PacketType::PublicKey(announcement)) => {
-                                        info!(
-                                            "Received PublicKeyAnnouncement from '{}'",
-                                            announcement.display_name
+                match network_manager.receive_message().await {
+                    Ok(packet) => {
+                        debug!("Received ChatPacket: {:?}", packet);
+                        match packet.packet_type {
+                            Some(PacketType::PublicKey(announcement)) => {
+                                info!(
+                                    "Received PublicKeyAnnouncement from '{}'",
+                                    announcement.display_name
+                                );
+
+                                // NOTE: Loopback is disabled at the socket level, so we should not receive our own announcements.
+                                // However, as a safety measure, we will still check if the announcement is from ourselves
+                                // Also this is mega cool.
+                                //
+                                // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
+                                // Since we are comparing cryptographic key material, it's crucial to avoid any timing discrepancies that could leak information about the key.
+                                // A standard equality check (==) is not safe for this purpose because it "short-circuits" (lol) it returns false as soon as it finds a mismatch.
+                                // An attacker could potentially measure the tiny differences in comparison time to guess the key's value byte by byte.
+                                //
+                                // The correct and secure method is to use a crate like subtle that provides constant-time cryptographic functions.
+                                let this_is_me = my_identity.x25519_public_key.as_bytes().len()
+                                    == announcement.x25519_public_key.len()
+                                    && my_identity
+                                        .x25519_public_key
+                                        .as_bytes()
+                                        .ct_eq(&announcement.x25519_public_key)
+                                        .into();
+
+                                // check to see if I am the sender
+                                if this_is_me {
+                                    info!("But I am '{}', ignoring.", announcement.display_name);
+                                    continue; // We gon baaaaail...
+                                }
+                                // Add peer keys to peer identity
+                                // TODO: Filter out self-sent announcements
+                                info!("Adding peer keys for '{}'", announcement.display_name);
+                                peer_identity
+                                    .add_peer_keys(
+                                        // NOTE: internally, this uses the hex-encoded SHA256 hash of the Ed25519 public key as the identifier
+                                        &announcement.x25519_public_key,
+                                        &announcement.ed25519_public_key,
+                                    )
+                                    .expect("Failed to add peer keys");
+
+                                info!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
+
+                                // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
+
+                                let kd_packet = create_sender_key_distribution(
+                                    &announcement,
+                                    &my_identity,
+                                    // &peer_identity,
+                                )
+                                .expect("Failed to distribute sender key");
+
+                                // We have the key distribution, send it.
+                                network_manager
+                                    .send_message(kd_packet)
+                                    .await
+                                    .expect("Failed to send KeyDistribution packet");
+
+                                // Now, let's create a PlaintextPayload to announce the new user
+                                let payload = PlaintextPayload {
+                                    display_name: announcement.display_name.clone(),
+                                    content: format!(
+                                        "{} has joined the chat.",
+                                        &announcement.display_name
+                                    ),
+                                    timestamp: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .expect("Getting time failed")
+                                        .as_secs(),
+                                };
+                                // Forward the announcement to the message display task
+                                // TODO: this needs to be removed because we already filtered out self-sent announcements above
+                                if payload.display_name != chat_id {
+                                    debug!(
+                                        "Forwarding announcement from '{}'",
+                                        payload.display_name
+                                    );
+                                    message_sender
+                                        .send(payload)
+                                        .await
+                                        .expect("Failed to send message");
+                                } else {
+                                    debug!(
+                                        "Ignoring self-sent announcement from '{}'",
+                                        payload.display_name
+                                    );
+                                }
+                            }
+                            Some(PacketType::KeyDist(key_dist)) => {
+                                // First, let's convert the sender_public_key_hash to hex string for lookup
+                                let sender_key_hash_hex = get_public_key_hash_as_hex_string(
+                                    &key_dist.sender_public_key_hash,
+                                );
+
+                                let recipient_key_hash_hex = get_public_key_hash_as_hex_string(
+                                    &key_dist.recipient_public_key_hash,
+                                );
+
+                                if sender_key_hash_hex
+                                    == get_public_key_hash_as_hex_string(
+                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                    )
+                                {
+                                    info!("Oh, this is me talking to myself, skipping.")
+                                } else {
+                                    info!(
+                                        "Received KeyDistribution packet:{:?} from: {} to: {}",
+                                        key_dist, sender_key_hash_hex, recipient_key_hash_hex
+                                    );
+
+                                    // Lookup the sender's x25519 public key in peer_identity
+                                    let sender_x25519_public = peer_identity
+                                        .peer_x25519_keys
+                                        .get(&sender_key_hash_hex)
+                                        .ok_or_else(|| {
+                                            error!("Unknown sender: {}", sender_key_hash_hex)
+                                        })
+                                        .expect("Failed to get the peer public key.");
+
+                                    if key_dist.encrypted_sender_key.len() < 12 {
+                                        error!("Encrypted data too short");
+                                        continue;
+                                    }
+
+                                    // Extract nonce and encrypted key
+                                    let (nonce_bytes, encrypted_key) =
+                                        key_dist.encrypted_sender_key.split_at(12);
+                                    let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
+
+                                    // Perform ECDH to get shared secret
+                                    let shared_secret = my_identity
+                                        .x25519_secret_key
+                                        .diffie_hellman(sender_x25519_public);
+
+                                    // Use shared secret as decryption key
+                                    let key =
+                                        chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
+                                    let cipher = ChaCha20Poly1305::new(key);
+
+                                    let decrypted_key = cipher
+                                        .decrypt(nonce, encrypted_key)
+                                        .map_err(|e| {
+                                            error!("Creating the decrypted_key failed: {}", e)
+                                        })
+                                        .expect("Failed to decrypt the sender key.");
+
+                                    if decrypted_key.len() != 32 {
+                                        error!("Invalid sender key length");
+                                    }
+
+                                    let sender_key = Key::from_slice(&decrypted_key);
+                                    let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                                    // Add the key to peer_identity
+                                    peer_identity
+                                        .peer_sender_keys
+                                        .entry(sender_key_hash_hex.clone())
+                                        .or_insert_with(std::collections::HashMap::new)
+                                        .insert(key_dist.key_id, sender_cipher);
+                                }
+                            }
+
+                            // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
+                            Some(PacketType::EncryptedMsg(encrypted_msg)) => {
+                                info!(
+                                    "Received EncryptedMessage from '{:?}', key_id {}",
+                                    encrypted_msg.sender_public_key_hash, encrypted_msg.key_id
+                                );
+                                // Decrypt the message
+                                // Convert the sender public key hash to hex string for lookup
+                                let peer_sender_public_key_as_hex_string =
+                                    get_public_key_hash_as_hex_string(
+                                        &encrypted_msg.sender_public_key_hash,
+                                    );
+
+                                // info!(
+                                //     "Received encrypted message from sender_public_key_hash: {}",
+                                //     peer_sender_public_key_as_hex_string
+                                // );
+
+                                // Handle encrypted message
+                                let plaintext_payload_result = decrypt_message(
+                                    &peer_sender_public_key_as_hex_string,
+                                    encrypted_msg.key_id,
+                                    &encrypted_msg.encrypted_payload,
+                                    &encrypted_msg.nonce,
+                                    &peer_identity,
+                                );
+
+                                match plaintext_payload_result {
+                                    Ok(plaintext_payload) => {
+                                        debug!(
+                                            "Forwarding message from '{}'",
+                                            plaintext_payload.display_name
                                         );
-
-                                        // NOTE: Loopback is disabled at the socket level, so we should not receive our own announcements.
-                                        // However, as a safety measure, we will still check if the announcement is from ourselves
-                                        // Also this is mega cool.
-                                        //
-                                        // The best way to compare two x25519_public_key values is with a constant-time comparison to prevent timing attacks.
-                                        // Since we are comparing cryptographic key material, it's crucial to avoid any timing discrepancies that could leak information about the key.
-                                        // A standard equality check (==) is not safe for this purpose because it "short-circuits" (lol) it returns false as soon as it finds a mismatch.
-                                        // An attacker could potentially measure the tiny differences in comparison time to guess the key's value byte by byte.
-                                        //
-                                        // The correct and secure method is to use a crate like subtle that provides constant-time cryptographic functions.
-                                        let this_is_me =
-                                            my_identity.x25519_public_key.as_bytes().len()
-                                                == announcement.x25519_public_key.len()
-                                                && my_identity
-                                                    .x25519_public_key
-                                                    .as_bytes()
-                                                    .ct_eq(&announcement.x25519_public_key)
-                                                    .into();
-
-                                        // check to see if I am the sender
-                                        if this_is_me {
-                                            info!(
-                                                "But I am '{}', ignoring.",
-                                                announcement.display_name
-                                            );
-                                            continue; // We gon baaaaail...
-                                        }
-                                        // Add peer keys to peer identity
-                                        // TODO: Filter out self-sent announcements
-                                        info!(
-                                            "Adding peer keys for '{}'",
-                                            announcement.display_name
-                                        );
-                                        peer_identity
-                                            .add_peer_keys(
-                                                // NOTE: internally, this uses the hex-encoded SHA256 hash of the Ed25519 public key as the identifier
-                                                &announcement.x25519_public_key,
-                                                &announcement.ed25519_public_key,
-                                            )
-                                            .expect("Failed to add peer keys");
-
-                                        info!(
-                                            "Current peers: {:?}",
-                                            peer_identity.peer_x25519_keys.keys()
-                                        );
-
-                                        // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
-
-                                        let kd_packet = create_sender_key_distribution(
-                                            &announcement,
-                                            &my_identity,
-                                            // &peer_identity,
-                                        )
-                                        .expect("Failed to distribute sender key");
-
-                                        // We have the key distribution, send it.
-                                        network_manager
-                                            .send_message(kd_packet)
+                                        message_sender
+                                            .send(plaintext_payload.clone())
                                             .await
-                                            .expect("Failed to send KeyDistribution packet");
-
-                                        // Now, let's create a PlaintextPayload to announce the new user
-                                        let payload = PlaintextPayload {
-                                            display_name: announcement.display_name.clone(),
-                                            content: format!(
-                                                "{} has joined the chat.",
-                                                &announcement.display_name
-                                            ),
-                                            timestamp: std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .expect("Getting time failed")
-                                                .as_secs(),
-                                        };
-                                        // Forward the announcement to the message display task
-                                        // TODO: this needs to be removed because we already filtered out self-sent announcements above
-                                        if payload.display_name != chat_id {
-                                            debug!(
-                                                "Forwarding announcement from '{}'",
-                                                payload.display_name
-                                            );
-                                            message_sender
-                                                .send(payload)
-                                                .await
-                                                .expect("Failed to send message");
-                                        } else {
-                                            debug!(
-                                                "Ignoring self-sent announcement from '{}'",
-                                                payload.display_name
-                                            );
-                                        }
+                                            .expect("Failed to send message");
                                     }
-                                    Some(PacketType::KeyDist(key_dist)) => {
-                                        // First, let's convert the sender_public_key_hash to hex string for lookup
-                                        let sender_key_hash_hex = get_public_key_hash_as_hex_string(
-                                            &key_dist.sender_public_key_hash,
-                                        );
-
-                                        let recipient_key_hash_hex =
-                                            get_public_key_hash_as_hex_string(
-                                                &key_dist.recipient_public_key_hash,
-                                            );
-
-                                        if sender_key_hash_hex
-                                            == get_public_key_hash_as_hex_string(
-                                                &my_identity
-                                                    .get_my_verifying_key_sha256hash_as_bytes(),
-                                            )
-                                        {
-                                            info!("Oh, this is me talking to myself, skipping.")
-                                        } else {
-                                            info!(
-                                                "Received KeyDistribution packet:{:?} from: {} to: {}",
-                                                key_dist,
-                                                sender_key_hash_hex,
-                                                recipient_key_hash_hex
-                                            );
-
-                                            // Lookup the sender's x25519 public key in peer_identity
-                                            let sender_x25519_public = peer_identity
-                                                .peer_x25519_keys
-                                                .get(&sender_key_hash_hex)
-                                                .ok_or_else(|| {
-                                                    error!(
-                                                        "Unknown sender: {}",
-                                                        sender_key_hash_hex
-                                                    )
-                                                })
-                                                .expect("Failed to get the peer public key.");
-
-                                            if key_dist.encrypted_sender_key.len() < 12 {
-                                                error!("Encrypted data too short");
-                                                continue;
-                                            }
-
-                                            // Extract nonce and encrypted key
-                                            let (nonce_bytes, encrypted_key) =
-                                                key_dist.encrypted_sender_key.split_at(12);
-                                            let nonce =
-                                                chacha20poly1305::Nonce::from_slice(nonce_bytes);
-
-                                            // Perform ECDH to get shared secret
-                                            let shared_secret = my_identity
-                                                .x25519_secret_key
-                                                .diffie_hellman(sender_x25519_public);
-
-                                            // Use shared secret as decryption key
-                                            let key = chacha20poly1305::Key::from_slice(
-                                                shared_secret.as_bytes(),
-                                            );
-                                            let cipher = ChaCha20Poly1305::new(key);
-
-                                            let decrypted_key = cipher
-                                                .decrypt(nonce, encrypted_key)
-                                                .map_err(|e| {
-                                                    error!(
-                                                        "Creating the decrypted_key failed: {}",
-                                                        e
-                                                    )
-                                                })
-                                                .expect("Failed to decrypt the sender key.");
-
-                                            if decrypted_key.len() != 32 {
-                                                error!("Invalid sender key length");
-                                            }
-
-                                            let sender_key = Key::from_slice(&decrypted_key);
-                                            let sender_cipher = ChaCha20Poly1305::new(sender_key);
-
-                                            // Add the key to peer_identity
-                                            peer_identity
-                                                .peer_sender_keys
-                                                .entry(sender_key_hash_hex.clone())
-                                                .or_insert_with(std::collections::HashMap::new)
-                                                .insert(key_dist.key_id, sender_cipher);
-                                        }
+                                    Err(CryptoError::UnknownSender { sender_hash }) => {
+                                        warn!("Wait, who is {sender_hash}? Let's send this msg to the naughty house for processing.");
                                     }
-
-                                    // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
-                                    Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                                        info!(
-                                            "Received EncryptedMessage from '{:?}', key_id {}",
-                                            encrypted_msg.sender_public_key_hash,
-                                            encrypted_msg.key_id
-                                        );
-                                        // Decrypt the message
-                                    }
-                                    _ => {
-                                        error!("Unknown ChatPacket type received.");
+                                    Err(_) => {
+                                        // all other errors will handle later
+                                        todo!()
                                     }
                                 }
-                                // Handle ChatPacket if needed
                             }
-                            ReceivedMessage::PlaintextPayload(payload) => {
-                                debug!("Received PlaintextPayload: {:?}", payload);
-                                // Forward the plaintext payload to the message display task
-                                // Filter messages sent by self
-                                debug!("Forwarding message from '{}'", payload.display_name);
-                                message_sender
-                                    .send(payload.clone())
-                                    .await
-                                    .expect("Failed to send message");
-                            } // ReceivedMessage::PeerSenderKey(peer_sender_key) => {
+                            Some(PacketType::PublicKeyRequest(request)) => {
+                                info!("Received PublicKeyRequest: {:?}", request);
+                                // TODO: handle the public key request if necessary
+                            }
 
-                              //     // Get the hex String of SHA256 Public key
-                              //     let peer_hash = get_sender_public_key_hash_as_hex(sender_public_key_hash);
-
-                              //     // Update peer_identity with the new sender key
-                              //     peer_identity
-                              //         .peer_sender_keys
-                              //         .entry(peer_sender_key.sender_key.to_string())
-                              //         .or_insert_with(HashMap::new)
-                              //         .insert(peer_sender_key.key_id, peer_sender_key.sender_cipher);
-                              // }
+                            None => todo!(),
                         }
+                        // ReceivedMessage::PlaintextPayload(payload) => {
+                        //     debug!("Received PlaintextPayload: {:?}", payload);
+                        //     // Forward the plaintext payload to the message display task
+                        //     // Filter messages sent by self
+                        //     debug!("Forwarding message from '{}'", payload.display_name);
+                        //     message_sender
+                        //         .send(payload.clone())
+                        //         .await
+                        //         .expect("Failed to send message");
+                        // } // ReceivedMessage::PeerSenderKey(peer_sender_key) => {
+
+                        //     // Get the hex String of SHA256 Public key
+                        //     let peer_hash = get_sender_public_key_hash_as_hex(sender_public_key_hash);
+
+                        //     // Update peer_identity with the new sender key
+                        //     peer_identity
+                        //         .peer_sender_keys
+                        //         .entry(peer_sender_key.sender_key.to_string())
+                        //         .or_insert_with(HashMap::new)
+                        //         .insert(peer_sender_key.key_id, peer_sender_key.sender_cipher);
                     }
                     Err(e) => {
                         error!("Error receiving message: {}", e);
 
                         // Assuming it's because we don't have the sender's public key, let's ask
-                        
                     }
                 }
             }

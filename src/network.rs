@@ -144,7 +144,7 @@ impl NetworkManager {
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(&self, peer_identity: &PeerIdentity) -> Result<ReceivedMessage> {
+    pub async fn receive_message(&self) -> Result<ChatPacket> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
@@ -153,86 +153,6 @@ impl NetworkManager {
 
         debug!("Received packet: {:?}", packet);
 
-        match packet.packet_type {
-            Some(PacketType::PublicKey(announcement)) => {
-                // Public keys are not encrypted.
-                // Return them to the processor as-is for handling.
-                let pk_packet = ChatPacket {
-                    packet_type: Some(PacketType::PublicKey(announcement)),
-                };
-                Ok(ReceivedMessage::ChatPacket(pk_packet))
-            }
-
-            Some(PacketType::KeyDist(key_dist)) => {
-                // Public keys are not encrypted.
-                // Return them to the processor as-is for handling.
-                let kd_packet = ChatPacket {
-                    packet_type: Some(PacketType::KeyDist(key_dist)),
-                };
-                Ok(ReceivedMessage::ChatPacket(kd_packet))
-
-                // Handle key distribution
-                // Get the other peers sender key and add to peer_identity
-
-                // Construct the sender key enum and return to processor
-                // let peer_sender_key: ReceivedMessage =
-                //     ReceivedMessage::PeerSenderKey(PeerSenderKey {
-                //         key_id: key_dist.key_id,
-                //         sender_cipher,
-                //     });
-
-                // // Return the sender key to the processor for updating peer_identity
-                // return Ok(peer_sender_key);
-            }
-
-            Some(PacketType::PublicKeyRequest(pk_request)) => {
-                // For now, let's just ship it upstream to processor.rs
-                let pk_request_packet = ChatPacket{packet_type: Some(PacketType::PublicKeyRequest(pk_request))};
-
-                Ok(ReceivedMessage::ChatPacket(pk_request_packet))
-            }
-            Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                // Convert the sender public key hash to hex string for lookup
-                let peer_sender_public_key_as_hex_string =
-                    get_public_key_hash_as_hex_string(&encrypted_msg.sender_public_key_hash);
-
-                info!(
-                    "Received encrypted message from sender_public_key_hash: {}",
-                    peer_sender_public_key_as_hex_string
-                );
-
-                // Handle encrypted message
-                let plaintext = decrypt_message(
-                    &peer_sender_public_key_as_hex_string,
-                    encrypted_msg.key_id,
-                    &encrypted_msg.encrypted_payload,
-                    &encrypted_msg.nonce,
-                    &peer_identity,
-                )?;
-                Ok(ReceivedMessage::PlaintextPayload(plaintext))
-
-                // if encrypted_msg.sender_id != my_identity.my_sender_id {
-                //     match decrypt_message(
-                //         &encrypted_msg.sender_id,
-                //         encrypted_msg.key_id,
-                //         &encrypted_msg.encrypted_payload,
-                //         &encrypted_msg.nonce,
-                //         &peer_identity,
-                //     ) {
-                //         Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
-                //         Err(_) => {
-                //             bail!(
-                //                 "(encrypted message from {} - no key)",
-                //                 encrypted_msg.sender_id
-                //             );
-                //         }
-                //     }
-                // } else {
-                //     // Ignore messages sent by self
-                //     Err(anyhow!("Ignoring self-sent message"))
-                // }
-            }
-            None => todo!(),
-        }
+        Ok(packet)
     }
 }
