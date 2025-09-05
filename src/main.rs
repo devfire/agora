@@ -12,7 +12,7 @@ mod crypto;
 mod network;
 mod processor;
 use crate::{
-    chat_message::{ChatPacket, PlaintextPayload},
+    chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
     crypto::create_public_key_announcement,
     identity::{MyIdentity, PeerIdentity},
@@ -103,9 +103,17 @@ async fn main() -> anyhow::Result<()> {
     let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id);
     debug!("Stdin input task spawned");
 
+    let initial_public_key_announcement =
+        create_public_key_announcement(&processor.my_identity).await;
+
+    // put it into a packet
+    let public_key_announcement_packet = ChatPacket {
+        packet_type: Some(PacketType::PublicKey(initial_public_key_announcement)),
+    };
+
     processor
         .network_manager
-        .send_message(create_public_key_announcement(&processor.my_identity).await)
+        .send_message(public_key_announcement_packet)
         .await?;
 
     // Wait for tasks to complete (they run indefinitely)

@@ -1,0 +1,220 @@
+You're absolutely right! For a chat application, you don't need ACKs at all. Alice just sends messages, Bob processes them when he can. Much simpler:
+
+## Minimal Solution: Just Buffer and Process
+
+**Core Principle**: Fire-and-forget messaging with automatic buffering for missing keys.
+
+## 1. Protobuf - Just Add PublicKeyRequest
+
+```protobuf
+// In proto/chat.proto - minimal addition
+message ChatPacket {
+  oneof packet_type {
+    PublicKeyAnnouncement public_key = 1;
+    KeyDistribution key_dist = 2;
+    EncryptedMessage encrypted_msg = 3;
+    PublicKeyRequest public_key_request = 4;  // Only this is new
+  }
+}
+
+message PublicKeyRequest {
+  bytes requested_public_key_hash = 1;
+  bytes requester_public_key_hash = 2;  
+  uint64 timestamp = 3;
+}
+```
+
+## 2. Bob: Simple Buffer and Process
+
+```rust
+// Minimal message processor
+pub struct MessageProcessor {
+    // ... existing fields
+    pending_messages: HashMap<String, Vec<EncryptedMessage>>, // sender_hash -> messages
+    requested_keys: HashSet<String>, // prevent spam requests
+}
+
+impl MessageProcessor {
+    pub async fn process_encrypted_message(&mut self, encrypted_msg: EncryptedMessage) -> Result<()> {
+        let sender_hash = get_public_key_hash_as_hex_string(&encrypted_msg.sender_public_key_hash);
+        
+        match decrypt_message(&sender_hash, encrypted_msg.key_id, &encrypted_msg.encrypted_payload, 
+                             &encrypted_msg.nonce, &self.peer_identity) {
+            Ok(plaintext) => {
+                // Successfully decrypted - show in chat
+                self.display_message(plaintext).await;
+                Ok(())
+            },
+            
+            Err(CryptoError::UnknownSender { sender_hash }) => {
+                info!("Unknown sender {}, buffering message", sender_hash);
+                
+                // Buffer the message
+                self.pending_messages
+                    .entry(sender_hash.clone())
+                    .or_default()
+                    .push(encrypted_msg);
+                
+                // Request key (only once)
+                if self.requested_keys.insert(sender_hash.clone()) {
+                    self.send_public_key_request(&sender_hash).await?;
+                }
+                
+                Ok(())
+            },
+            
+            Err(CryptoError::UnknownKeyId { key_id, sender_hash }) => {
+                info!("Unknown key_id {} for {}, buffering message", key_id, sender_hash);
+                
+                // Buffer the message
+                self.pending_messages
+                    .entry(sender_hash.clone())
+                    .or_default()
+                    .push(encrypted_msg);
+                
+                // Request key distribution (could track these separately to avoid spam)
+                self.send_key_distribution_request(&sender_hash, key_id).await?;
+                
+                Ok(())
+            },
+            
+            Err(other) => {
+                error!("Permanent decryption error, dropping message: {}", other);
+                Ok(()) // Just drop bad messages
+            }
+        }
+    }
+    
+    // When PublicKeyAnnouncement arrives
+    pub async fn handle_public_key_announcement(&mut self, announcement: &PublicKeyAnnouncement) -> Result<()> {
+        // Add peer keys
+        self.peer_identity.add_peer_keys(&announcement.x25519_public_key, &announcement.ed25519_public_key)?;
+        
+        let sender_hash = get_public_key_hash_as_hex_string(&announcement.ed25519_public_key);
+        
+        // Process buffered messages
+        if let Some(messages) = self.pending_messages.remove(&sender_hash) {
+            info!("Processing {} buffered messages from {}", messages.len(), sender_hash);
+            
+            for msg in messages {
+                // Try to decrypt and display
+                match decrypt_message(&sender_hash, msg.key_id, &msg.encrypted_payload, 
+                                    &msg.nonce, &self.peer_identity) {
+                    Ok(plaintext) => {
+                        self.display_message(plaintext).await;
+                    },
+                    Err(e) => {
+                        warn!("Still can't decrypt buffered message: {}", e);
+                        // Could re-buffer if it's still a recoverable error
+                    }
+                }
+            }
+        }
+        
+        self.requested_keys.remove(&sender_hash);
+        Ok(())
+    }
+    
+    async fn send_public_key_request(&self, requested_sender_hash: &str) -> Result<()> {
+        let pk_request = PublicKeyRequest {
+            requested_public_key_hash: hex::decode(requested_sender_hash)?,
+            requester_public_key_hash: self.my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64,
+        };
+        
+        let packet = ChatPacket {
+            packet_type: Some(PacketType::PublicKeyRequest(pk_request))
+        };
+        
+        info!("Requesting public key for {}", requested_sender_hash);
+        self.network_manager.send_message(packet).await
+    }
+    
+    // Handle incoming public key requests
+    pub async fn handle_public_key_request(&self, request: &PublicKeyRequest) -> Result<()> {
+        let requested_hash = hex::encode(&request.requested_public_key_hash);
+        let my_hash = hex::encode(self.my_identity.get_my_verifying_key_sha256hash_as_bytes());
+        
+        if requested_hash == my_hash {
+            info!("Sending our public key to requester");
+            
+            let announcement = create_public_key_announcement(&self.my_identity).await;
+            self.network_manager.send_message(announcement).await?;
+        }
+        
+        Ok(())
+    }
+    
+    // Cleanup old buffered messages periodically
+    pub fn cleanup_stale_messages(&mut self) {
+        let cutoff = SystemTime::now() - Duration::from_secs(600); // 10 minutes
+        
+        for messages in self.pending_messages.values_mut() {
+            // Note: We don't have timestamps on EncryptedMessage, so this is approximate
+            // Could add received_at timestamp if needed
+            if messages.len() > 100 { // Just limit buffer size instead
+                messages.truncate(50); // Keep most recent 50
+                warn!("Truncated message buffer due to size limit");
+            }
+        }
+    }
+}
+```
+
+## 3. Alice: Just Send Messages
+
+```rust
+impl MessageSender {
+    pub async fn send_message(&self, content: &str, recipient_hash: &str) -> Result<()> {
+        let plaintext = PlaintextPayload {
+            display_name: self.my_identity.display_name.clone(),
+            content: content.to_string(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64,
+        };
+        
+        let encrypted_msg = encrypt_message(&plaintext, &self.my_identity, recipient_hash)?;
+        
+        let packet = ChatPacket {
+            packet_type: Some(PacketType::EncryptedMsg(encrypted_msg))
+        };
+        
+        self.network_manager.send_message(packet).await?;
+        info!("Message sent to {}: {}", recipient_hash, content);
+        
+        Ok(()) // Fire and forget
+    }
+}
+```
+
+## Message Flow - Super Simple
+
+```mermaid
+sequenceDiagram
+    participant A as Alice
+    participant B as Bob
+    
+    A->>B: EncryptedMessage
+    Note over B: Can't decrypt - buffer it
+    B->>A: PublicKeyRequest  
+    A->>B: PublicKeyAnnouncement
+    Note over B: Process buffered messages
+    Note over B: Display in chat UI
+```
+
+## Benefits
+
+1. **Minimal Protocol**: Just one new message type
+2. **Fire-and-Forget**: Alice doesn't track delivery 
+3. **Automatic Recovery**: Messages appear when keys arrive
+4. **Simple Implementation**: No ACK tracking, no retry logic
+5. **Chat-Appropriate**: Messages eventually appear, like real chat apps
+
+## That's It!
+
+No ACKs, no complex state tracking, no retries. Just:
+- Buffer messages you can't decrypt
+- Request missing keys  
+- Process buffered messages when keys arrive
+- Clean up old messages periodically
+
+Perfect for a chat application where eventual delivery is fine and you don't need guaranteed delivery receipts.

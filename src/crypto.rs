@@ -1,6 +1,8 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use chacha20poly1305::{
     AeadCore, ChaCha20Poly1305, Key, KeyInit,
-    aead::{Aead,OsRng as ChaChaOsRng},
+    aead::{Aead, OsRng as ChaChaOsRng},
 };
 use prost::{DecodeError, Message};
 
@@ -48,21 +50,6 @@ pub enum CryptoError {
 
 pub type CryptoResult<T> = Result<T, CryptoError>;
 
-/// We can get either a ChatPacket or a decrypted PlaintextPayload
-/// This enum helps distinguish between the two types of received messages
-/// ChatPacket is for control messages (e.g., PublicKeyAnnouncement)
-/// PlaintextPayload is for regular chat messages which are outside the ChatPacket wrapper
-/// This allows the network.receive_message() to handle them appropriately
-///
-/// This is needed because network.rs doesn't own peer_identity to update it directly but processor.rs does.
-/// So network.rs can pass the raw ChatPacket up to processor.rs which can then handle it properly.
-/// Otherwise if network.rs only ever returns ChatPacket, it cannot return decrypted PlaintextPayload messages. And others.
-pub enum ReceivedMessage {
-    ChatPacket(ChatPacket),
-    PlaintextPayload(PlaintextPayload),
-    // PeerSenderKey(PeerSenderKey),
-}
-
 // pub struct PeerSenderKey {
 //     // pub sender_key: String,
 //     pub key_id: u32,
@@ -71,7 +58,7 @@ pub enum ReceivedMessage {
 use crate::{
     chat_message::{
         self, ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
-        chat_packet::PacketType,
+        PublicKeyRequest, chat_packet::PacketType,
     },
     identity::{MyIdentity, PeerIdentity},
 };
@@ -165,20 +152,34 @@ pub fn decrypt_message(
 }
 
 // Announce our public key to the group
-pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> ChatPacket {
+pub async fn create_public_key_announcement(my_identity: &MyIdentity) -> PublicKeyAnnouncement {
     let announcement = PublicKeyAnnouncement {
         display_name: my_identity.display_name.to_string(),
         x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
         ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
     };
 
-    debug!("Creating public key announcement: {:?}", announcement);
-    ChatPacket {
-        packet_type: Some(PacketType::PublicKey(announcement)),
-    }
+    announcement
 }
 
-// pub async fn create_public_key_request()
+/// Fill out the missing public key TPS form
+pub async fn create_public_key_request(
+    requested_public_key_hash: &[u8],
+    requester_public_key_hash: &[u8],
+) -> ChatPacket {
+    let public_key_request = PublicKeyRequest {
+        requested_public_key_hash: requested_public_key_hash.to_vec(),
+        requester_public_key_hash: requester_public_key_hash.to_vec(),
+        timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Failed to get system time")
+            .as_nanos() as u64,
+    };
+
+    ChatPacket {
+        packet_type: Some(PacketType::PublicKeyRequest(public_key_request)),
+    }
+}
 
 pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> Result<ChatPacket> {
     tracing::debug!("Creating encrypted chat packet with content: {}", content);
