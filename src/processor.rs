@@ -272,7 +272,9 @@ impl Processor {
                                                 .insert(key_dist.key_id, sender_cipher);
                                         }
                                         None => {
-                                            warn!("Uh-oh, we no have public key #sadface");
+                                            warn!(
+                                                "Missing ed25519 public key hash string to look for the peer's x25519 public key."
+                                            );
                                         }
                                     }
 
@@ -385,7 +387,10 @@ impl Processor {
 
         // Request key (only once)
         // If this fails, that means we already asked, so let's not ask again.
-        if self.requested_keys.insert(sender_hash_as_string.to_string()) {
+        if self
+            .requested_keys
+            .insert(sender_hash_as_string.to_string())
+        {
             // ask for the public key of the mystery sender
             let public_key_request = create_public_key_request(
                 &encrypted_msg.sender_public_key_hash.clone(),

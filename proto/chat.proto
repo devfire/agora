@@ -73,6 +73,10 @@ message KeyDistribution {
   // Target recipient's user ID (allows for DMs in group chat)
   // Recipients ignore distributions not intended for them
   bytes recipient_public_key_hash = 4;
+
+  // Complete sender identity
+  bytes sender_ed25519_public_key = 5;  // 32 bytes for verification
+  bytes sender_x25519_public_key = 6;   // 32 bytes for ECDH
 }
 
 // =============================================================================
@@ -82,44 +86,11 @@ message KeyDistribution {
 // EncryptedMessage: Contains the actual encrypted chat content
 // References distributed key_id for decryption
 message EncryptedMessage {
-  // SHA256 of the sender Ed25519 public key
-  bytes sender_public_key_hash = 1;
-
-  // Key ID this message was encrypted with
-  // Recipients must have received corresponding KeyDistribution
-  uint32 key_id = 2;
-
-  // PlaintextPayload encrypted with sender key
-  // Uses authenticated encryption: ChaCha20-Poly1305
-  bytes encrypted_payload = 3;
-
-  // Cryptographic nonce for encryption (12 bytes for AES-GCM, 24 for ChaCha20)
-  // Never reuse nonce with same key - prevents known plaintext attacks
-  bytes nonce = 4;
-
-  // Ed25519 signature over hash of (sender_id + key_id + encrypted_payload + nonce)
-  // 64 bytes - proves sender owns the private key corresponding to their announced public key
-  bytes signature = 5;
-}
-
-// =============================================================================
-// PUBLIC KEY REQUEST
-// =============================================================================
-
-// PublicKeyRequest: Request a peer's public key when sender_public_key_hash is unknown
-// Sent when receiving messages from unrecognized senders
-message PublicKeyRequest {
-  // SHA-256 hash of the unknown Ed25519 public key we need
-  // This allows peers to identify which key is being requested
-  bytes requested_public_key_hash = 1;
-
-  // Optional: Requester's own public key hash for response routing
-  // Allows the responder to know who to send the PublicKeyAnnouncement to
-  bytes requester_public_key_hash = 2;
-
-  // Optional: Unix timestamp of when request was made
-  // Helps prevent replay attacks and allows for request expiration
-  uint64 timestamp = 3;
+  uint32 key_id = 1;
+  bytes encrypted_payload = 2;
+  bytes nonce = 3;
+  bytes signature = 4;
+  PublicKeyAnnouncement sender_identity = 5;  // Contains both keys + display name
 }
 
 // =============================================================================
