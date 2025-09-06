@@ -320,6 +320,8 @@ pub fn create_sender_key_distribution(
         key_id: my_identity.current_key_id,
         encrypted_sender_key: encrypted_key,
         recipient_public_key_hash: create_sha256(&x25519_public_key_bytes.to_vec()),
+        sender_ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
+        sender_x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec()
     };
 
     info!(

@@ -329,6 +329,12 @@ impl Processor {
                                         warn!(
                                             "Wait, who is {sender_hash_as_string}? Let's send this msg to the naughty house for processing."
                                         );
+
+                                        self.handle_missing_public_key(
+                                            &sender_hash_as_string,
+                                            &my_identity,
+                                            &encrypted_msg,
+                                        );
                                     }
                                     Err(_) => {
                                         // all other errors will handle later

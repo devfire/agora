@@ -90,7 +90,8 @@ message EncryptedMessage {
   bytes encrypted_payload = 2;
   bytes nonce = 3;
   bytes signature = 4;
-  PublicKeyAnnouncement sender_identity = 5;  // Contains both keys + display name
+  // SHA-256 of ed25519_public_key (matches message identity)
+  bytes sender_public_key_hash = 5;
 }
 
 // =============================================================================
@@ -110,6 +111,25 @@ message PlaintextPayload {
   uint64 timestamp = 3;
 }
 
+// =============================================================================
+// PUBLIC KEY REQUEST
+// =============================================================================
+
+// PublicKeyRequest: Request a peer's public key when sender_public_key_hash is unknown
+// Sent when receiving messages from unrecognized senders
+message PublicKeyRequest {
+  // SHA-256 hash of the unknown Ed25519 public key we need
+  // This allows peers to identify which key is being requested
+  bytes requested_public_key_hash = 1;
+
+  // Requester's own public key hash for response routing
+  // Allows the responder to know who to send the PublicKeyAnnouncement to
+  bytes requester_public_key_hash = 2;
+
+  // Unix timestamp of when request was made
+  // Helps prevent replay attacks and allows for request expiration
+  uint64 timestamp = 3;
+}
 // =============================================================================
 // IMPLEMENTATION NOTES
 //
