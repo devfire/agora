@@ -29,13 +29,15 @@ use std::{path::Path, sync::Arc};
 
 use tracing::{Level, debug, error, info};
 
-use tracing_subscriber;
+use tracing_subscriber::EnvFilter;
 
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = ChatArgs::parse();
+
+    let filter_directives = "debug,rustyline=info";
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
@@ -45,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .with_thread_names(args.log_level == "debug" || args.log_level == "trace")
         .with_file(args.log_level == "debug" || args.log_level == "trace")
         .with_line_number(args.log_level == "debug" || args.log_level == "trace")
+        .with_env_filter(filter_directives)
         .init();
 
     // Validate arguments

@@ -1,6 +1,7 @@
 use crate::{
     chat_message::{
-        EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType,
+        ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
+        chat_packet::PacketType,
     },
     crypto::{
         CryptoError, create_encrypted_chat_packet, create_public_key_announcement,
@@ -108,7 +109,7 @@ impl Processor {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
             let mut pending_messages: EncryptedMessagesPendingDecryptionHashMap = HashMap::new();
-            let mut requested_keys: RequestedKeysHashSet = HashSet::new();
+            // let mut requested_keys: RequestedKeysHashSet = HashSet::new();
             let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
 
             loop {
@@ -185,6 +186,10 @@ impl Processor {
                                 // Let's see if this is a new peer coming online
 
                                 // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
+                                debug!(
+                                    "Creating KeyDistribution packet for peer '{}'",
+                                    announcement.display_name
+                                );
                                 let kd_packet = create_sender_key_distribution(
                                     &announcement,
                                     &my_identity,
@@ -197,6 +202,14 @@ impl Processor {
                                     .send_message(kd_packet)
                                     .await
                                     .expect("Failed to send KeyDistribution packet");
+
+                                debug!(
+                                    "Sent KeyDistribution packet intended for '{}' (hash: {})",
+                                    announcement.display_name,
+                                    get_public_key_hash_as_hex_string(&create_sha256(
+                                        &announcement.ed25519_public_key
+                                    ))
+                                );
 
                                 // Now, let's create a PlaintextPayload to announce the new user
                                 let payload = PlaintextPayload {
@@ -503,6 +516,14 @@ impl Processor {
                                         &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                     );
 
+                                debug!(
+                                    "PublicKeyRequest: sender={}, me={}, equal={}",
+                                    sender_public_ed25519_key_string,
+                                    my_public_key_hash_as_string,
+                                    sender_public_ed25519_key_string
+                                        == my_public_key_hash_as_string
+                                );
+
                                 if sender_public_ed25519_key_string == my_public_key_hash_as_string
                                 {
                                     info!(
@@ -519,28 +540,66 @@ impl Processor {
                                 let announcement =
                                     create_public_key_announcement(&my_identity).await;
 
-                                let pk_announcement_packet = create_sender_key_distribution(
-                                    &announcement,
-                                    &my_identity,
-                                    // &peer_identity,
-                                )
-                                .expect("Failed to create sender key");
+                                debug!(
+                                    "Responding to PublicKeyRequest with PublicKeyAnnouncement for '{}'",
+                                    announcement.display_name
+                                );
 
-                                // We have the public key request, send it.
+                                // Respond with PublicKeyAnnouncement (not KeyDistribution!)
+                                let pk_announcement_packet = ChatPacket {
+                                    packet_type: Some(PacketType::PublicKey(announcement.clone())),
+                                };
+
+                                // Send the announcement
                                 network_manager
                                     .send_message(pk_announcement_packet)
                                     .await
                                     .expect("Failed to announce my public keys");
 
-                                // let's send the sender key distribution as well and send it
-                                let sender_key_packet =
-                                    create_sender_key_distribution(&announcement, &my_identity)
-                                        .expect("Sender key packet should include all details.");
+                                debug!("Sent PublicKeyAnnouncement in response to request");
 
-                                network_manager
-                                    .send_message(sender_key_packet)
-                                    .await
-                                    .expect("Should have sent the sender key");
+                                // The requester needs our sender key to decrypt our messages
+                                // We need to create KeyDistribution intended for the requester
+                                // But we need their x25519 key to encrypt our sender key for them
+
+                                let requester_hex_string = get_public_key_hash_as_hex_string(
+                                    &request.requester_public_key_hash,
+                                );
+
+                                // Check if we have the requester's x25519 key
+                                if let Some(requester_x25519_key) =
+                                    peer_identity.peer_x25519_keys.get(&requester_hex_string)
+                                {
+                                    debug!(
+                                        "Creating KeyDistribution for requester using their x25519 key"
+                                    );
+
+                                    // Create a temporary announcement structure with the requester's keys
+                                    let requester_announcement = PublicKeyAnnouncement {
+                                        display_name: my_identity.display_name.clone(),
+                                        x25519_public_key: requester_x25519_key.as_bytes().to_vec(),
+                                        ed25519_public_key: request
+                                            .requester_public_key_hash
+                                            .clone(),
+                                    };
+
+                                    // Create KeyDistribution intended for the requester
+                                    let sender_key_packet = create_sender_key_distribution(
+                                        &requester_announcement,
+                                        &my_identity,
+                                    )
+                                    .expect("Should create KeyDistribution for requester");
+
+                                    debug!("Sending KeyDistribution packet intended for requester");
+                                    network_manager
+                                        .send_message(sender_key_packet)
+                                        .await
+                                        .expect("Should send KeyDistribution to requester");
+                                } else {
+                                    debug!(
+                                        "Don't have requester's x25519 key yet, cannot create KeyDistribution"
+                                    );
+                                }
                             }
 
                             None => todo!(),
