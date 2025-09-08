@@ -228,6 +228,7 @@ fn create_signable_encrypted_message(msg: &EncryptedMessage) -> Vec<u8> {
     hasher.update(&msg.key_id.to_le_bytes());
     hasher.update(&msg.encrypted_payload);
     hasher.update(&msg.nonce);
+    hasher.update(&msg.sender_public_key_hash);
 
     hasher.finalize().to_vec()
 }
@@ -311,9 +312,18 @@ pub fn create_sender_key_distribution(
         .ok_or_else(|| anyhow!("No current sender key"))?;
 
     let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng);
-debug!("Encryption - My secret key (first 8 bytes): {:?}", &my_identity.x25519_secret_key.as_bytes()[..8]);
-debug!("Encryption - Recipient public key (first 8 bytes): {:?}", &x25519_public_key_bytes[..8]);  
-debug!("Encryption - Shared secret (first 8 bytes): {:?}", &shared_secret.as_bytes()[..8]);
+    debug!(
+        "Encryption - My secret key (first 8 bytes): {:?}",
+        &my_identity.x25519_secret_key.as_bytes()[..8]
+    );
+    debug!(
+        "Encryption - Recipient public key (first 8 bytes): {:?}",
+        &x25519_public_key_bytes[..8]
+    );
+    debug!(
+        "Encryption - Shared secret (first 8 bytes): {:?}",
+        &shared_secret.as_bytes()[..8]
+    );
     let encrypted_key = cipher
         .encrypt(&nonce, sender_key_bytes.as_ref())
         .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
