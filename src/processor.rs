@@ -211,6 +211,30 @@ impl Processor {
                                     ))
                                 );
 
+                                // Proactively request the peer's sender key to ensure bidirectional key exchange
+                                let peer_public_key_hash =
+                                    create_sha256(&announcement.ed25519_public_key);
+                                info!(
+                                    "Proactively requesting sender key from new peer '{}' (hash: {})",
+                                    announcement.display_name,
+                                    get_public_key_hash_as_hex_string(&peer_public_key_hash)
+                                );
+
+                                let public_key_request = create_public_key_request(
+                                    &peer_public_key_hash,
+                                    &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                )
+                                .await;
+
+                                network_manager
+                                    .send_message(public_key_request)
+                                    .await
+                                    .expect("Failed to send proactive PublicKeyRequest");
+
+                                debug!(
+                                    "Sent proactive PublicKeyRequest to establish bidirectional key exchange"
+                                );
+
                                 // Now, let's create a PlaintextPayload to announce the new user
                                 let payload = PlaintextPayload {
                                     display_name: announcement.display_name.clone(),
@@ -598,6 +622,27 @@ impl Processor {
                                 } else {
                                     debug!(
                                         "Don't have requester's x25519 key yet, cannot create KeyDistribution"
+                                    );
+
+                                    // If we don't have the requester's x25519 key, we need to request their PublicKeyAnnouncement
+                                    // This ensures bidirectional key exchange when one peer missed the initial announcement
+                                    debug!(
+                                        "Requesting requester's PublicKeyAnnouncement to complete key exchange"
+                                    );
+
+                                    let reciprocal_request = create_public_key_request(
+                                        &request.requester_public_key_hash,
+                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                    )
+                                    .await;
+
+                                    network_manager
+                                        .send_message(reciprocal_request)
+                                        .await
+                                        .expect("Failed to send reciprocal PublicKeyRequest");
+
+                                    debug!(
+                                        "Sent reciprocal PublicKeyRequest to complete bidirectional key exchange"
                                     );
                                 }
                             }
