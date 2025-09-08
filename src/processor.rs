@@ -219,15 +219,21 @@ impl Processor {
                                     get_public_key_hash_as_hex_string(
                                         &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                     );
-                                // if recipient_key_hash_hex_string != my_ed25519_key_hash_hex_string {
-                                //     info!(
-                                //         "New key distribution for {recipient_key_hash_hex_string} and I am {my_ed25519_key_hash_hex_string}."
-                                //     )
-                                // } else {
-                                info!(
-                                    "Received KeyDistribution packet from: {} to: {}",
-                                    sender_key_hash_hex_string, recipient_key_hash_hex_string
-                                );
+                                if recipient_key_hash_hex_string != my_ed25519_key_hash_hex_string {
+                                    info!(
+                                        "KeyDistribution packet not intended for me. Intended for: {}, I am: {}",
+                                        recipient_key_hash_hex_string, my_ed25519_key_hash_hex_string
+                                    );
+                                    continue;
+                                } else {
+                                    info!(
+                                        "Received KeyDistribution packet from: {} to: {}",
+                                        sender_key_hash_hex_string, recipient_key_hash_hex_string
+                                    );
+                                    debug!("Recipient verification - Packet intended for: {}", recipient_key_hash_hex_string);
+                                    debug!("Recipient verification - My public key hash: {}", my_ed25519_key_hash_hex_string);
+                                    debug!("Recipient verification - Am I the intended recipient? {}", recipient_key_hash_hex_string == my_ed25519_key_hash_hex_string);
+                                }
 
                                 // match peer_identity
                                 //     .peer_x25519_keys
@@ -256,6 +262,11 @@ impl Processor {
                                     chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
                                 let cipher = ChaCha20Poly1305::new(key);
 
+                                debug!("Decryption - My secret key (first 8 bytes): {:?}", &my_identity.x25519_secret_key.as_bytes()[..8]);
+                                debug!("Decryption - Sender public key (first 8 bytes): {:?}", &x25519_public_key_bytes[..8]);
+                                debug!("Decryption - Shared secret (first 8 bytes): {:?}", &shared_secret.as_bytes()[..8]);
+                                debug!("Decryption - Nonce: {:?}", nonce_bytes);
+                                debug!("Decryption - Encrypted data length: {}", encrypted_key.len());
                                 let decrypted_key = cipher
                                     .decrypt(nonce, encrypted_key)
                                     .map_err(|e| error!("Creating the decrypted_key failed: {}", e))
