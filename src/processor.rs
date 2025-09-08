@@ -4,12 +4,14 @@ use crate::{
     },
     crypto::{
         CryptoError, create_encrypted_chat_packet, create_public_key_announcement,
-        create_public_key_request, create_sender_key_distribution, decrypt_message,
+        create_public_key_request, create_sender_key_distribution, create_sha256, decrypt_message,
         get_public_key_hash_as_hex_string,
     },
     identity::{MyIdentity, PeerIdentity},
     network,
 };
+
+use anyhow::{Result, anyhow};
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 // use anyhow::{anyhow};
@@ -34,8 +36,6 @@ pub struct Processor {
     pub network_manager: Arc<network::NetworkManager>,
     pub my_identity: MyIdentity,
     peer_identity: PeerIdentity,
-    pending_messages: EncryptedMessagesPendingDecryptionHashMap,
-    requested_keys: RequestedKeysHashSet,
 }
 
 impl Processor {
@@ -48,8 +48,6 @@ impl Processor {
             network_manager,
             my_identity,
             peer_identity,
-            pending_messages: HashMap::new(),
-            requested_keys: HashSet::new(),
         }
     }
 
@@ -106,6 +104,9 @@ impl Processor {
         tokio::spawn(async move {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
+            let mut pending_messages: EncryptedMessagesPendingDecryptionHashMap = HashMap::new();
+            let mut requested_keys: RequestedKeysHashSet = HashSet::new();
+
             loop {
                 match network_manager.receive_message().await {
                     Ok(packet) => {
@@ -137,7 +138,7 @@ impl Processor {
 
                                 // check to see if I am the sender
                                 if this_is_me {
-                                    info!("But I am '{}', ignoring.", announcement.display_name);
+                                    debug!("But I am '{}', ignoring.", announcement.display_name);
                                     continue; // We gon baaaaail...
                                 }
                                 // Add peer keys to peer identity
@@ -153,8 +154,9 @@ impl Processor {
 
                                 info!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
 
-                                // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
+                                // Let's see if this is a new peer coming online
 
+                                // Send the sender key only when we receive a PublicKeyAnnouncement from a new peer.
                                 let kd_packet = create_sender_key_distribution(
                                     &announcement,
                                     &my_identity,
@@ -199,91 +201,120 @@ impl Processor {
                                 }
                             }
                             Some(PacketType::KeyDist(key_dist)) => {
-                                // First, let's convert the sender_public_key_hash to hex string for lookup
-                                let sender_key_hash_hex = get_public_key_hash_as_hex_string(
-                                    &key_dist.sender_public_key_hash,
+                                // This is who it came from
+                                // First, let's convert the sender_ed25519_public_key to hex string for lookup
+                                let sender_key_hash_hex_string = get_public_key_hash_as_hex_string(
+                                    &crate::crypto::create_sha256(
+                                        &key_dist.sender_ed25519_public_key,
+                                    ),
                                 );
 
-                                let recipient_key_hash_hex = get_public_key_hash_as_hex_string(
-                                    &key_dist.recipient_public_key_hash,
-                                );
-
-                                if sender_key_hash_hex
-                                    == get_public_key_hash_as_hex_string(
-                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-                                    )
-                                {
-                                    info!("Oh, this is me talking to myself, skipping.")
-                                } else {
-                                    info!(
-                                        "Received KeyDistribution packet:{:?} from: {} to: {}",
-                                        key_dist, sender_key_hash_hex, recipient_key_hash_hex
+                                // This is who this was meant for
+                                let recipient_key_hash_hex_string =
+                                    get_public_key_hash_as_hex_string(
+                                        &key_dist.recipient_public_key_hash,
                                     );
 
-                                    // Lookup the sender's x25519 public key in peer_identity
-                                    // TODO: If no key, off you go to the missing key jail to wait for the right key.
-                                    let sender_x25519_public_result =
-                                        peer_identity.peer_x25519_keys.get(&sender_key_hash_hex);
-                                    // .ok_or_else(|| {
-                                    //     error!("Unknown sender: {}", sender_key_hash_hex)
-                                    // });
+                                let my_ed25519_key_hash_hex_string =
+                                    get_public_key_hash_as_hex_string(
+                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                    );
+                                // if recipient_key_hash_hex_string != my_ed25519_key_hash_hex_string {
+                                //     info!(
+                                //         "New key distribution for {recipient_key_hash_hex_string} and I am {my_ed25519_key_hash_hex_string}."
+                                //     )
+                                // } else {
+                                info!(
+                                    "Received KeyDistribution packet from: {} to: {}",
+                                    sender_key_hash_hex_string, recipient_key_hash_hex_string
+                                );
 
-                                    match sender_x25519_public_result {
-                                        Some(sender_x25519_public) => {
-                                            // Extract nonce and encrypted key
-                                            let (nonce_bytes, encrypted_key) =
-                                                key_dist.encrypted_sender_key.split_at(12);
-                                            let nonce =
-                                                chacha20poly1305::Nonce::from_slice(nonce_bytes);
+                                // match peer_identity
+                                //     .peer_x25519_keys
+                                //     .get(&sender_key_hash_hex_string)
+                                // {
+                                //     Some(sender_x25519_public) => {
 
-                                            // Perform ECDH to get shared secret
-                                            let shared_secret = my_identity
-                                                .x25519_secret_key
-                                                .diffie_hellman(sender_x25519_public);
+                                // OK now we convert the key to a 32 byte fixed array
+                                let x25519_public_key_bytes: [u8; 32] =
+                                    key_dist.sender_x25519_public_key.clone().try_into().map_err(
+                                        |_| anyhow!("Failed to convert Vec<u8> to [u8; 32]"),
+                                    ).expect("Should have been able to convert public key bytes to a 32 byte fixed array");
 
-                                            // Use shared secret as decryption key
-                                            let key = chacha20poly1305::Key::from_slice(
-                                                shared_secret.as_bytes(),
-                                            );
-                                            let cipher = ChaCha20Poly1305::new(key);
+                                // Extract nonce and encrypted key
+                                let (nonce_bytes, encrypted_key) =
+                                    key_dist.encrypted_sender_key.split_at(12);
+                                let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
 
-                                            let decrypted_key = cipher
-                                                .decrypt(nonce, encrypted_key)
-                                                .map_err(|e| {
-                                                    error!(
-                                                        "Creating the decrypted_key failed: {}",
-                                                        e
-                                                    )
-                                                })
-                                                .expect("Failed to decrypt the sender key.");
+                                // Perform ECDH to get shared secret
+                                let shared_secret = my_identity.x25519_secret_key.diffie_hellman(
+                                    &x25519_dalek::PublicKey::from(x25519_public_key_bytes),
+                                );
 
-                                            if decrypted_key.len() != 32 {
-                                                error!("Invalid sender key length");
-                                            }
+                                // Use shared secret as decryption key
+                                let key =
+                                    chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
+                                let cipher = ChaCha20Poly1305::new(key);
 
-                                            let sender_key = Key::from_slice(&decrypted_key);
-                                            let sender_cipher = ChaCha20Poly1305::new(sender_key);
+                                let decrypted_key = cipher
+                                    .decrypt(nonce, encrypted_key)
+                                    .map_err(|e| error!("Creating the decrypted_key failed: {}", e))
+                                    .expect("Failed to decrypt the sender key.");
 
-                                            // Add the key to peer_identity
-                                            peer_identity
-                                                .peer_sender_keys
-                                                .entry(sender_key_hash_hex.clone())
-                                                .or_insert_with(std::collections::HashMap::new)
-                                                .insert(key_dist.key_id, sender_cipher);
-                                        }
-                                        None => {
-                                            warn!(
-                                                "Missing ed25519 public key hash string to look for the peer's x25519 public key."
-                                            );
-                                        }
-                                    }
-
-                                    if key_dist.encrypted_sender_key.len() < 12 {
-                                        error!("Encrypted data too short");
-                                        continue;
-                                    }
+                                if decrypted_key.len() != 32 {
+                                    error!("Invalid sender key length");
                                 }
+
+                                let sender_key = Key::from_slice(&decrypted_key);
+                                let sender_cipher = ChaCha20Poly1305::new(sender_key);
+
+                                // Add the key to peer_identity
+                                peer_identity
+                                    .peer_sender_keys
+                                    .entry(sender_key_hash_hex_string.clone())
+                                    .or_insert_with(std::collections::HashMap::new)
+                                    .insert(key_dist.key_id, sender_cipher);
+                                // }
+                                // None => {
+                                //     warn!(
+                                //         "Missing ed25519 public key hash string to look for the peer's x25519 public key."
+                                //     );
+                                //     // Request key (only once)
+                                //     // If this fails, that means we already asked, so let's not ask again.
+                                //     if requested_keys.insert(sender_key_hash_hex_string) {
+                                //         // ask for the public key of the mystery sender
+                                //         let public_key_request = create_public_key_request(
+                                //             &key_dist.sender_ed25519_public_key,
+                                //             &my_identity
+                                //                 .get_my_verifying_key_sha256hash_as_bytes(),
+                                //         )
+                                //         .await;
+
+                                //         info!(
+                                //             "Asking {recipient_key_hash_hex_string} for their public key."
+                                //         );
+
+                                //         // Send it off, asking for the public key
+                                //         network_manager
+                                //             .send_message(public_key_request)
+                                //             .await
+                                //             .expect(
+                                //                 "Failed to send PublicKeyRequest packet",
+                                //             );
+                                //     }
+                                //     // Clear the current prompt line and print the message, then re-display prompt
+                                //     eprint!("\r\x1b[K"); // Carriage return and clear line
+
+                                //     eprint!("{} > ", chat_id); // Re-display the prompt
+                                // }
                             }
+
+                            // if key_dist.encrypted_sender_key.len() < 12 {
+                            //     error!("Encrypted data too short");
+                            //     continue;
+                            // }
+                            // }
+                            // }
 
                             // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
                             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
@@ -298,6 +329,21 @@ impl Processor {
                                         &encrypted_msg.sender_public_key_hash,
                                     );
 
+                                // see if it's from me
+                                let my_public_key_as_hex_string = get_public_key_hash_as_hex_string(
+                                    &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                );
+
+                                if peer_sender_public_key_as_hex_string
+                                    == my_public_key_as_hex_string
+                                {
+                                    warn!("Talking to myself again, ignoring.");
+
+                                    eprint!("\r\x1b[K"); // Carriage return and clear line
+
+                                    eprint!("{} > ", chat_id); // Re-display the prompt
+                                    continue;
+                                }
                                 // info!(
                                 //     "Received encrypted message from sender_public_key_hash: {}",
                                 //     peer_sender_public_key_as_hex_string
@@ -330,11 +376,43 @@ impl Processor {
                                             "Wait, who is {sender_hash_as_string}? Let's send this msg to the naughty house for processing."
                                         );
 
-                                        self.handle_missing_public_key(
-                                            &sender_hash_as_string,
-                                            &my_identity,
-                                            &encrypted_msg,
+                                        // Append this message to the naughty msg HashMap
+                                        pending_messages
+                                            .entry(sender_hash_as_string.to_string())
+                                            .or_default()
+                                            .push(encrypted_msg.clone());
+
+                                        let my_public_key_hash_as_string =
+                                            get_public_key_hash_as_hex_string(
+                                                &my_identity
+                                                    .get_my_verifying_key_sha256hash_as_bytes(),
+                                            );
+
+                                        // Request key (only once)
+                                        // If this fails, that means we already asked, so let's not ask again.
+                                        // if requested_keys.insert(sender_hash_as_string.to_string())
+                                        // {
+                                        // ask for the public key of the mystery sender
+                                        let public_key_request = create_public_key_request(
+                                            &encrypted_msg.sender_public_key_hash.clone(),
+                                            &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                        )
+                                        .await;
+
+                                        info!(
+                                            "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
                                         );
+
+                                        // Send it off, asking for the public key
+                                        network_manager
+                                            .send_message(public_key_request)
+                                            .await
+                                            .expect("Failed to send PublicKeyRequest packet");
+                                        // }
+                                        // Clear the current prompt line and print the message, then re-display prompt
+                                        eprint!("\r\x1b[K"); // Carriage return and clear line
+
+                                        eprint!("{} > ", chat_id); // Re-display the prompt
                                     }
                                     Err(_) => {
                                         // all other errors will handle later
@@ -343,13 +421,33 @@ impl Processor {
                                 }
                             }
                             Some(PacketType::PublicKeyRequest(request)) => {
-                                info!("Received PublicKeyRequest: {:?}", request);
+                                let sender_public_ed25519_key_string =
+                                    get_public_key_hash_as_hex_string(
+                                        &request.requester_public_key_hash,
+                                    );
+
+                                let my_public_key_hash_as_string =
+                                    get_public_key_hash_as_hex_string(
+                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                    );
+
+                                if sender_public_ed25519_key_string == my_public_key_hash_as_string
+                                {
+                                    info!(
+                                        "Public key request from {sender_public_ed25519_key_string} to {my_public_key_hash_as_string}"
+                                    );
+                                    continue;
+                                }
+                                info!(
+                                    "Received PublicKeyRequest from {}",
+                                    sender_public_ed25519_key_string
+                                );
                                 // TODO: handle the public key request if necessary
 
                                 let announcement =
                                     create_public_key_announcement(&my_identity).await;
 
-                                let pk_request_packet = create_sender_key_distribution(
+                                let pk_announcement_packet = create_sender_key_distribution(
                                     &announcement,
                                     &my_identity,
                                     // &peer_identity,
@@ -358,9 +456,19 @@ impl Processor {
 
                                 // We have the public key request, send it.
                                 network_manager
-                                    .send_message(pk_request_packet)
+                                    .send_message(pk_announcement_packet)
                                     .await
-                                    .expect("Failed to send PublicKeyRequest packet");
+                                    .expect("Failed to announce my public keys");
+
+                                // let's send the sender key distribution as well and send it
+                                let sender_key_packet =
+                                    create_sender_key_distribution(&announcement, &my_identity)
+                                        .expect("Sender key packet should include all details.");
+
+                                network_manager
+                                    .send_message(sender_key_packet)
+                                    .await
+                                    .expect("Should have sent the sender key");
                             }
 
                             None => todo!(),
@@ -375,46 +483,14 @@ impl Processor {
     }
 
     /// Deal with messages we cannot decrypt
-    async fn handle_missing_public_key(
-        &mut self,
-        sender_hash_as_string: &str,
-        my_identity: &MyIdentity,
-        encrypted_msg: &EncryptedMessage,
-    ) {
-        // Append this message to the naughty msg HashMap
-        self.pending_messages
-            .entry(sender_hash_as_string.to_string())
-            .or_default()
-            .push(encrypted_msg.clone());
+    // async fn handle_missing_public_key(
+    //     &mut self,
+    //     sender_hash_as_string: &str,
+    //     my_identity: &MyIdentity,
+    //     encrypted_msg: &EncryptedMessage,
+    // ) {
 
-        let my_public_key_hash_as_string = get_public_key_hash_as_hex_string(
-            &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-        );
-
-        // Request key (only once)
-        // If this fails, that means we already asked, so let's not ask again.
-        if self
-            .requested_keys
-            .insert(sender_hash_as_string.to_string())
-        {
-            // ask for the public key of the mystery sender
-            let public_key_request = create_public_key_request(
-                &encrypted_msg.sender_public_key_hash.clone(),
-                &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-            )
-            .await;
-
-            info!(
-                "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
-            );
-
-            // Send it off, asking for the public key
-            self.network_manager
-                .send_message(public_key_request)
-                .await
-                .expect("Failed to send PublicKeyRequest packet");
-        }
-    }
+    // }
     /// Spawn a task to handle user input from stdin.
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
     pub fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {

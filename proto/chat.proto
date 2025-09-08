@@ -60,23 +60,23 @@ message PublicKeyAnnouncement {
 // KeyDistribution: Distributes ephemeral sender keys encrypted for specific recipients
 message KeyDistribution {
   // SHA-256 of ed25519_public_key (matches message identity)
-  bytes sender_public_key_hash = 1;
+  // bytes sender_public_key_hash = 1;
 
   // Unique key chain identifier (uint32 allows ~4B keys per conversation)
   // Incrementing counter that advances for each new key in the chain
-  uint32 key_id = 2;
+  uint32 key_id = 1;
 
   // Symmetric key encrypted with recipient's public key
   // Only intended recipient can decrypt and use this key
-  bytes encrypted_sender_key = 3;
+  bytes encrypted_sender_key = 2;
 
   // Target recipient's user ID (allows for DMs in group chat)
   // Recipients ignore distributions not intended for them
-  bytes recipient_public_key_hash = 4;
+  bytes recipient_public_key_hash = 3;
 
   // Complete sender identity
-  bytes sender_ed25519_public_key = 5;  // 32 bytes for verification
-  bytes sender_x25519_public_key = 6;   // 32 bytes for ECDH
+  bytes sender_ed25519_public_key = 4;  // 32 bytes for verification
+  bytes sender_x25519_public_key = 5;   // 32 bytes for ECDH
 }
 
 // =============================================================================

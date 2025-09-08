@@ -232,7 +232,7 @@ fn create_signable_encrypted_message(msg: &EncryptedMessage) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-fn create_sha256(raw_bytes: &Vec<u8>) -> Vec<u8> {
+pub fn create_sha256(raw_bytes: &Vec<u8>) -> Vec<u8> {
     let mut hasher = sha2::Sha256::default();
 
     hasher.update(&raw_bytes);
@@ -316,19 +316,12 @@ pub fn create_sender_key_distribution(
         .map_err(|e| anyhow!("Creating key distribution failed: {}", e))?;
 
     let key_dist = chat_message::KeyDistribution {
-        sender_public_key_hash: create_sha256(&my_identity.verifying_key.as_bytes().to_vec()),
         key_id: my_identity.current_key_id,
-        encrypted_sender_key: encrypted_key,
-        recipient_public_key_hash: create_sha256(&x25519_public_key_bytes.to_vec()),
+        encrypted_sender_key: [nonce.as_slice(), &encrypted_key].concat(),
+        recipient_public_key_hash: create_sha256(&announcement.ed25519_public_key.to_vec()),
         sender_ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
-        sender_x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec()
+        sender_x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
     };
-
-    info!(
-        "Created Sender Key Distribution: sender: {} recipient: {}",
-        get_public_key_hash_as_hex_string(&key_dist.sender_public_key_hash),
-        get_public_key_hash_as_hex_string(&key_dist.recipient_public_key_hash)
-    );
 
     Ok(ChatPacket {
         packet_type: Some(PacketType::KeyDist(key_dist)),
