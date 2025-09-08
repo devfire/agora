@@ -29,15 +29,17 @@ use std::{path::Path, sync::Arc};
 
 use tracing::{Level, debug, error, info};
 
-use tracing_subscriber::EnvFilter;
-
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = ChatArgs::parse();
 
-    let filter_directives = "debug,rustyline=info";
+    // a bit of hack but rustyline cannot go to debug, it pumps out mad amount of info.
+    // sorry, rustyline :)
+    let filter_directives = format!("{}{}", args.log_level, ",rustyline=info");
+
+    info!("My tracing filter directives: {}", filter_directives);
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
