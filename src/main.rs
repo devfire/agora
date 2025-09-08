@@ -12,7 +12,7 @@ mod crypto;
 mod network;
 mod processor;
 use crate::{
-    chat_message::{ChatPacket, PlaintextPayload},
+    chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
     crypto::create_public_key_announcement,
     identity::{MyIdentity, PeerIdentity},
@@ -29,13 +29,17 @@ use std::{path::Path, sync::Arc};
 
 use tracing::{Level, debug, error, info};
 
-use tracing_subscriber;
-
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse command-line arguments
     let args = ChatArgs::parse();
+
+    // a bit of hack but rustyline cannot go to debug, it pumps out mad amount of info.
+    // sorry, rustyline :)
+    let filter_directives = format!("{}{}", args.log_level, ",rustyline=info");
+
+    debug!("My tracing filter directives: {}", filter_directives);
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
@@ -45,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         .with_thread_names(args.log_level == "debug" || args.log_level == "trace")
         .with_file(args.log_level == "debug" || args.log_level == "trace")
         .with_line_number(args.log_level == "debug" || args.log_level == "trace")
+        .with_env_filter(filter_directives)
         .init();
 
     // Validate arguments
@@ -53,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    info!(
+    debug!(
         "Starting chat '{}' with multicast address {}",
         args.chat_id, args.multicast_address
     );
@@ -70,11 +75,11 @@ async fn main() -> anyhow::Result<()> {
         MyIdentity::new(key_path, &args.chat_id)?
     } else {
         // Use a default identity path if none provided
-        info!("No key file provided, using default identity");
+        debug!("No key file provided, using default identity");
         MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
 
-    debug!("Loaded identity with sender ID: {}", identity.my_sender_id);
+    debug!("Loaded identity with sender ID: {}", identity.display_name);
 
     // Initialize peer identity (empty for now, will be populated as we receive messages)
     let peer_identity = PeerIdentity::new();
@@ -103,9 +108,17 @@ async fn main() -> anyhow::Result<()> {
     let stdin_input_handle = processor.spawn_stdin_input_task(&args.chat_id);
     debug!("Stdin input task spawned");
 
+    let initial_public_key_announcement =
+        create_public_key_announcement(&processor.my_identity).await;
+
+    // put it into a packet
+    let public_key_announcement_packet = ChatPacket {
+        packet_type: Some(PacketType::PublicKey(initial_public_key_announcement)),
+    };
+
     processor
         .network_manager
-        .send_message(create_public_key_announcement(&processor.my_identity).await)
+        .send_message(public_key_announcement_packet)
         .await?;
 
     // Wait for tasks to complete (they run indefinitely)
@@ -114,11 +127,11 @@ async fn main() -> anyhow::Result<()> {
     // Wait for any of the essential tasks to complete.
     // The stdin_input_handle is the only one designed to finish, triggering a shutdown.
     tokio::select! {
-        _ = udp_intake_handle => info!("UDP intake task completed unexpectedly."),
-        _ = display_handle => info!("Display task completed unexpectedly."),
-        _ = stdin_input_handle => info!("Stdin task complete. Shutting down."),
+        _ = udp_intake_handle => debug!("UDP intake task completed unexpectedly."),
+        _ = display_handle => debug!("Display task completed unexpectedly."),
+        _ = stdin_input_handle => debug!("Stdin task complete. Shutting down."),
     }
 
-    info!("Chat application shut down.");
+    debug!("Chat application shut down.");
     Ok(())
 }

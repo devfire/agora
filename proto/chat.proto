@@ -29,13 +29,17 @@ message ChatPacket {
     // Public key announcement for identity verification
     PublicKeyAnnouncement public_key = 1;
 
-    // Encrypted sender key distribution (double ratchet advancement)
+    // Encrypted sender key distribution
     KeyDistribution key_dist = 2;
 
     // Actual encrypted chat message
     EncryptedMessage encrypted_msg = 3;
+
+    // Request for public key when unknown sender detected
+    PublicKeyRequest public_key_request = 4;  // NEW
   }
 }
+
 
 // =============================================================================
 // PUBLIC KEY MANAGEMENT
@@ -44,9 +48,9 @@ message ChatPacket {
 // PublicKeyAnnouncement: Announces user's long-term public key for identity verification
 // Broadcast when joining group or after key rotation
 message PublicKeyAnnouncement {
-  string user_id = 1;
-  bytes x25519_public_key = 2;  // 32 bytes for ECDH
-  bytes ed25519_public_key = 3; // 32 bytes for verification
+  string display_name = 1;            // Human-readable name
+  bytes x25519_public_key = 2;        // 32 bytes for ECDH
+  bytes ed25519_public_key = 3;       // 32 bytes for verification
 }
 
 // =============================================================================
@@ -55,20 +59,24 @@ message PublicKeyAnnouncement {
 
 // KeyDistribution: Distributes ephemeral sender keys encrypted for specific recipients
 message KeyDistribution {
-  // User generating and distributing this key
-  string sender_id = 1;
+  // SHA-256 of ed25519_public_key (matches message identity)
+  // bytes sender_public_key_hash = 1;
 
   // Unique key chain identifier (uint32 allows ~4B keys per conversation)
   // Incrementing counter that advances for each new key in the chain
-  uint32 key_id = 2;
+  uint32 key_id = 1;
 
   // Symmetric key encrypted with recipient's public key
   // Only intended recipient can decrypt and use this key
-  bytes encrypted_sender_key = 3;
+  bytes encrypted_sender_key = 2;
 
   // Target recipient's user ID (allows for DMs in group chat)
   // Recipients ignore distributions not intended for them
-  string recipient_id = 4;
+  bytes recipient_public_key_hash = 3;
+
+  // Complete sender identity
+  bytes sender_ed25519_public_key = 4;  // 32 bytes for verification
+  bytes sender_x25519_public_key = 5;   // 32 bytes for ECDH
 }
 
 // =============================================================================
@@ -78,20 +86,12 @@ message KeyDistribution {
 // EncryptedMessage: Contains the actual encrypted chat content
 // References distributed key_id for decryption
 message EncryptedMessage {
-  // Message originator (should match key distributor)
-  string sender_id = 1;
-
-  // Key ID this message was encrypted with
-  // Recipients must have received corresponding KeyDistribution
-  uint32 key_id = 2;
-
-  // PlaintextPayload encrypted with sender key
-  // Uses authenticated encryption: AES-GCM or ChaCha20-Poly1305 recommended
-  bytes encrypted_payload = 3;
-
-  // Cryptographic nonce for encryption (12 bytes for AES-GCM, 24 for ChaCha20)
-  // Never reuse nonce with same key - prevents known plaintext attacks
-  bytes nonce = 4;
+  uint32 key_id = 1;
+  bytes encrypted_payload = 2;
+  bytes nonce = 3;
+  bytes signature = 4;
+  // SHA-256 of ed25519_public_key (matches message identity)
+  bytes sender_public_key_hash = 5;
 }
 
 // =============================================================================
@@ -101,8 +101,8 @@ message EncryptedMessage {
 // PlaintextPayload: Internal message structure encrypted within EncryptedMessage
 // Separate from EncryptedMessage to allow future extensibility
 message PlaintextPayload {
-  // Sender identifier (redundant with outer message for validation)
-  string sender_id = 1;
+  // Human readable name
+  string display_name = 1;
 
   // Actual chat message content (Unicode text)
   string content = 2;
@@ -111,6 +111,25 @@ message PlaintextPayload {
   uint64 timestamp = 3;
 }
 
+// =============================================================================
+// PUBLIC KEY REQUEST
+// =============================================================================
+
+// PublicKeyRequest: Request a peer's public key when sender_public_key_hash is unknown
+// Sent when receiving messages from unrecognized senders
+message PublicKeyRequest {
+  // SHA-256 hash of the unknown Ed25519 public key we need
+  // This allows peers to identify which key is being requested
+  bytes requested_public_key_hash = 1;
+
+  // Requester's own public key hash for response routing
+  // Allows the responder to know who to send the PublicKeyAnnouncement to
+  bytes requester_public_key_hash = 2;
+
+  // Unix timestamp of when request was made
+  // Helps prevent replay attacks and allows for request expiration
+  uint64 timestamp = 3;
+}
 // =============================================================================
 // IMPLEMENTATION NOTES
 //

@@ -1,18 +1,13 @@
-use crate::{
-    ChatPacket,
-    chat_message::chat_packet::PacketType,
-    crypto::{PeerSenderKey, ReceivedMessage, decrypt_message},
-    identity::{MyIdentity, PeerIdentity},
-};
-use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
+use crate::ChatPacket;
+
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
-use tracing::error;
 use std::net::{Ipv4Addr, SocketAddr};
+use tracing::{debug, error, info};
 
 use tokio::net::UdpSocket;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 /// Configuration for network operations
 #[derive(Debug, Clone)]
@@ -73,6 +68,9 @@ impl NetworkManager {
         // Enable SO_REUSEADDR to allow multiple agents on the same machine
         socket.set_reuse_address(true)?;
 
+        // Disable loopback so we don't receive our own messages
+        // socket.set_multicast_loop_v4(false)?;
+
         // On Unix systems, also set SO_REUSEPORT if available
         #[cfg(unix)]
         {
@@ -123,7 +121,7 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
-        tracing::info!("Sending packet: {:?}", packet);
+        debug!("Sending packet: {:?}", packet);
         if let Some(packet_to_send) = packet.packet_type {
             // Serialize the packet to bytes
             let packet_bytes = ChatPacket {
@@ -141,112 +139,15 @@ impl NetworkManager {
     }
 
     /// Receive a single message from the multicast group
-    pub async fn receive_message(
-        &self,
-        my_identity: &MyIdentity,
-        peer_identity: &PeerIdentity,
-    ) -> Result<ReceivedMessage> {
+    pub async fn receive_message(&self) -> Result<ChatPacket> {
         let mut buffer = vec![0u8; self.config.buffer_size];
 
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
         // Deserialize the received bytes into a ChatPacket
         let packet = ChatPacket::decode(&buffer[..len])?;
 
-        match packet.packet_type {
-            Some(PacketType::PublicKey(announcement)) => {
-                // Public keys are not encrypted.
-                // Return them to the processor as-is for handling.
-                let pk_packet = ChatPacket {
-                    packet_type: Some(PacketType::PublicKey(announcement)),
-                };
-                Ok(ReceivedMessage::ChatPacket(pk_packet))
-            }
+        debug!("Received packet: {:?}", packet);
 
-            Some(PacketType::KeyDist(key_dist)) => {
-                // Handle key distribution
-                // Get the other peers sender key and add to peer_identity
-                if key_dist.recipient_id != my_identity.my_sender_id {
-                    // Ignore key distributions not intended for me
-                    return Err(anyhow!("This key distribution not intended for me"));
-                }
-
-                let sender_x25519_public = peer_identity
-                    .peer_x25519_keys
-                    .get(key_dist.recipient_id.as_str())
-                    .ok_or_else(|| anyhow!("Unknown sender: {}", key_dist.recipient_id))?;
-
-                if key_dist.encrypted_sender_key.len() < 12 {
-                    return Err(anyhow!("Encrypted data too short"));
-                }
-
-                // Extract nonce and encrypted key
-                let (nonce_bytes, encrypted_key) = key_dist.encrypted_sender_key.split_at(12);
-                let nonce = chacha20poly1305::Nonce::from_slice(nonce_bytes);
-
-                // Perform ECDH to get shared secret
-                let shared_secret = my_identity
-                    .x25519_secret_key
-                    .diffie_hellman(sender_x25519_public);
-
-                // Use shared secret as decryption key
-                let key = chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
-                let cipher = ChaCha20Poly1305::new(key);
-
-                let decrypted_key = cipher
-                    .decrypt(nonce, encrypted_key)
-                    .map_err(|e| anyhow!("Creating the decrypted_key failed: {}", e))?;
-
-                if decrypted_key.len() != 32 {
-                    return Err(anyhow!("Invalid sender key length"));
-                }
-
-                let sender_key = Key::from_slice(&decrypted_key);
-                let sender_cipher = ChaCha20Poly1305::new(sender_key);
-
-                // Construct the sender key enum and return to processor
-                let peer_sender_key: ReceivedMessage =
-                    ReceivedMessage::PeerSenderKey(PeerSenderKey {
-                        sender_key: key_dist.sender_id.clone(),
-                        key_id: key_dist.key_id,
-                        sender_cipher,
-                    });
-
-                // Return the sender key to the processor for updating peer_identity
-                return Ok(peer_sender_key);
-            }
-            Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                // Handle encrypted message
-                let plaintext = decrypt_message(
-                    &encrypted_msg.sender_id,
-                    encrypted_msg.key_id,
-                    &encrypted_msg.encrypted_payload,
-                    &encrypted_msg.nonce,
-                    &peer_identity,
-                )?;
-                Ok(ReceivedMessage::PlaintextPayload(plaintext))
-
-                // if encrypted_msg.sender_id != my_identity.my_sender_id {
-                //     match decrypt_message(
-                //         &encrypted_msg.sender_id,
-                //         encrypted_msg.key_id,
-                //         &encrypted_msg.encrypted_payload,
-                //         &encrypted_msg.nonce,
-                //         &peer_identity,
-                //     ) {
-                //         Ok(payload) => Ok(ReceivedMessage::PlaintextPayload(payload)),
-                //         Err(_) => {
-                //             bail!(
-                //                 "(encrypted message from {} - no key)",
-                //                 encrypted_msg.sender_id
-                //             );
-                //         }
-                //     }
-                // } else {
-                //     // Ignore messages sent by self
-                //     Err(anyhow!("Ignoring self-sent message"))
-                // }
-            }
-            None => todo!(),
-        }
+        Ok(packet)
     }
 }
