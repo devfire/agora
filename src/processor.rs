@@ -10,8 +10,10 @@ use crate::{
     identity::{MyIdentity, PeerIdentity},
     network,
 };
+use prost::Message;
 
 use anyhow::{Result, anyhow};
+use sha2::{Digest, Sha256};
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 // use anyhow::{anyhow};
@@ -19,6 +21,7 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
 
@@ -106,10 +109,35 @@ impl Processor {
 
             let mut pending_messages: EncryptedMessagesPendingDecryptionHashMap = HashMap::new();
             let mut requested_keys: RequestedKeysHashSet = HashSet::new();
+            let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
 
             loop {
                 match network_manager.receive_message().await {
                     Ok(packet) => {
+                        // Calculate packet hash for deduplication
+                        let packet_bytes = packet.encode_to_vec();
+                        let mut hasher = Sha256::default();
+                        hasher.update(&packet_bytes);
+                        let packet_hash = hasher.finalize().to_vec();
+
+                        // Check if we've seen this packet recently (within 30 seconds)
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        if let Some(&timestamp) = seen_packets.get(&packet_hash) {
+                            if now - timestamp < 30 {
+                                debug!("Ignoring duplicate packet");
+                                continue;
+                            }
+                        }
+
+                        // Add to seen packets with current timestamp
+                        seen_packets.insert(packet_hash, now);
+
+                        // Clean up old entries (packets older than 30 seconds)
+                        seen_packets.retain(|_, &mut timestamp| now - timestamp < 30);
+
                         debug!("Received ChatPacket: {:?}", packet);
                         match packet.packet_type {
                             Some(PacketType::PublicKey(announcement)) => {
@@ -222,7 +250,8 @@ impl Processor {
                                 if recipient_key_hash_hex_string != my_ed25519_key_hash_hex_string {
                                     info!(
                                         "KeyDistribution packet not intended for me. Intended for: {}, I am: {}",
-                                        recipient_key_hash_hex_string, my_ed25519_key_hash_hex_string
+                                        recipient_key_hash_hex_string,
+                                        my_ed25519_key_hash_hex_string
                                     );
                                     continue;
                                 } else {
@@ -230,9 +259,19 @@ impl Processor {
                                         "Received KeyDistribution packet from: {} to: {}",
                                         sender_key_hash_hex_string, recipient_key_hash_hex_string
                                     );
-                                    debug!("Recipient verification - Packet intended for: {}", recipient_key_hash_hex_string);
-                                    debug!("Recipient verification - My public key hash: {}", my_ed25519_key_hash_hex_string);
-                                    debug!("Recipient verification - Am I the intended recipient? {}", recipient_key_hash_hex_string == my_ed25519_key_hash_hex_string);
+                                    debug!(
+                                        "Recipient verification - Packet intended for: {}",
+                                        recipient_key_hash_hex_string
+                                    );
+                                    debug!(
+                                        "Recipient verification - My public key hash: {}",
+                                        my_ed25519_key_hash_hex_string
+                                    );
+                                    debug!(
+                                        "Recipient verification - Am I the intended recipient? {}",
+                                        recipient_key_hash_hex_string
+                                            == my_ed25519_key_hash_hex_string
+                                    );
                                 }
 
                                 // match peer_identity
@@ -262,11 +301,23 @@ impl Processor {
                                     chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
                                 let cipher = ChaCha20Poly1305::new(key);
 
-                                debug!("Decryption - My secret key (first 8 bytes): {:?}", &my_identity.x25519_secret_key.as_bytes()[..8]);
-                                debug!("Decryption - Sender public key (first 8 bytes): {:?}", &x25519_public_key_bytes[..8]);
-                                debug!("Decryption - Shared secret (first 8 bytes): {:?}", &shared_secret.as_bytes()[..8]);
+                                debug!(
+                                    "Decryption - My secret key (first 8 bytes): {:?}",
+                                    &my_identity.x25519_secret_key.as_bytes()[..8]
+                                );
+                                debug!(
+                                    "Decryption - Sender public key (first 8 bytes): {:?}",
+                                    &x25519_public_key_bytes[..8]
+                                );
+                                debug!(
+                                    "Decryption - Shared secret (first 8 bytes): {:?}",
+                                    &shared_secret.as_bytes()[..8]
+                                );
                                 debug!("Decryption - Nonce: {:?}", nonce_bytes);
-                                debug!("Decryption - Encrypted data length: {}", encrypted_key.len());
+                                debug!(
+                                    "Decryption - Encrypted data length: {}",
+                                    encrypted_key.len()
+                                );
                                 let decrypted_key = cipher
                                     .decrypt(nonce, encrypted_key)
                                     .map_err(|e| error!("Creating the decrypted_key failed: {}", e))
@@ -330,8 +381,11 @@ impl Processor {
                             // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
                             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
                                 info!(
-                                    "Received EncryptedMessage from '{:?}', key_id {}",
-                                    encrypted_msg.sender_public_key_hash, encrypted_msg.key_id
+                                    "Received EncryptedMessage from '{}', key_id {}",
+                                    get_public_key_hash_as_hex_string(
+                                        &encrypted_msg.sender_public_key_hash
+                                    ),
+                                    encrypted_msg.key_id
                                 );
                                 // Decrypt the message
                                 // Convert the sender public key hash to hex string for lookup
@@ -399,6 +453,17 @@ impl Processor {
                                                     .get_my_verifying_key_sha256hash_as_bytes(),
                                             );
 
+                                        info!(
+                                            "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
+                                        );
+
+                                        info!(
+                                            "Public key packet requested: {} requester: {}",
+                                            get_public_key_hash_as_hex_string(
+                                                &encrypted_msg.sender_public_key_hash
+                                            ),
+                                            my_public_key_hash_as_string
+                                        );
                                         // Request key (only once)
                                         // If this fails, that means we already asked, so let's not ask again.
                                         // if requested_keys.insert(sender_hash_as_string.to_string())
@@ -409,10 +474,6 @@ impl Processor {
                                             &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                         )
                                         .await;
-
-                                        info!(
-                                            "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
-                                        );
 
                                         // Send it off, asking for the public key
                                         network_manager
@@ -425,9 +486,9 @@ impl Processor {
 
                                         eprint!("{} > ", chat_id); // Re-display the prompt
                                     }
-                                    Err(_) => {
+                                    Err(e) => {
                                         // all other errors will handle later
-                                        todo!()
+                                        error!("Error handling encrypted message: {}", e);
                                     }
                                 }
                             }
