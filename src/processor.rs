@@ -86,7 +86,7 @@ impl Processor {
                     debug!("Ignoring self-sent message from '{}'", message.display_name);
                 }
             }
-            info!("Message display task ending.");
+            debug!("Message display task ending.");
         })
     }
 
@@ -142,7 +142,7 @@ impl Processor {
                         debug!("Received ChatPacket: {:?}", packet);
                         match packet.packet_type {
                             Some(PacketType::PublicKey(announcement)) => {
-                                info!(
+                                debug!(
                                     "Received PublicKeyAnnouncement from '{}'",
                                     announcement.display_name
                                 );
@@ -172,7 +172,7 @@ impl Processor {
                                 }
                                 // Add peer keys to peer identity
                                 // TODO: Filter out self-sent announcements
-                                info!("Adding peer keys for '{}'", announcement.display_name);
+                                debug!("Adding peer keys for '{}'", announcement.display_name);
                                 peer_identity
                                     .add_peer_keys(
                                         // NOTE: internally, this uses the hex-encoded SHA256 hash of the Ed25519 public key as the identifier
@@ -181,7 +181,7 @@ impl Processor {
                                     )
                                     .expect("Failed to add peer keys");
 
-                                info!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
+                                debug!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
 
                                 // Let's see if this is a new peer coming online
 
@@ -214,7 +214,7 @@ impl Processor {
                                 // Proactively request the peer's sender key to ensure bidirectional key exchange
                                 let peer_public_key_hash =
                                     create_sha256(&announcement.ed25519_public_key);
-                                info!(
+                                debug!(
                                     "Proactively requesting sender key from new peer '{}' (hash: {})",
                                     announcement.display_name,
                                     get_public_key_hash_as_hex_string(&peer_public_key_hash)
@@ -285,14 +285,14 @@ impl Processor {
                                         &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                     );
                                 if recipient_key_hash_hex_string != my_ed25519_key_hash_hex_string {
-                                    info!(
+                                    debug!(
                                         "KeyDistribution packet not intended for me. Intended for: {}, I am: {}",
                                         recipient_key_hash_hex_string,
                                         my_ed25519_key_hash_hex_string
                                     );
                                     continue;
                                 } else {
-                                    info!(
+                                    debug!(
                                         "Received KeyDistribution packet from: {} to: {}",
                                         sender_key_hash_hex_string, recipient_key_hash_hex_string
                                     );
@@ -389,7 +389,7 @@ impl Processor {
                                 //         )
                                 //         .await;
 
-                                //         info!(
+                                //         debug!(
                                 //             "Asking {recipient_key_hash_hex_string} for their public key."
                                 //         );
 
@@ -417,7 +417,7 @@ impl Processor {
 
                             // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
                             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                                info!(
+                                debug!(
                                     "Received EncryptedMessage from '{}', key_id {}",
                                     get_public_key_hash_as_hex_string(
                                         &encrypted_msg.sender_public_key_hash
@@ -446,7 +446,7 @@ impl Processor {
                                     eprint!("{} > ", chat_id); // Re-display the prompt
                                     continue;
                                 }
-                                // info!(
+                                // debug!(
                                 //     "Received encrypted message from sender_public_key_hash: {}",
                                 //     peer_sender_public_key_as_hex_string
                                 // );
@@ -490,11 +490,11 @@ impl Processor {
                                                     .get_my_verifying_key_sha256hash_as_bytes(),
                                             );
 
-                                        info!(
+                                        debug!(
                                             "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
                                         );
 
-                                        info!(
+                                        debug!(
                                             "Public key packet requested: {} requester: {}",
                                             get_public_key_hash_as_hex_string(
                                                 &encrypted_msg.sender_public_key_hash
@@ -550,12 +550,12 @@ impl Processor {
 
                                 if sender_public_ed25519_key_string == my_public_key_hash_as_string
                                 {
-                                    info!(
+                                    debug!(
                                         "Public key request from {sender_public_ed25519_key_string} to {my_public_key_hash_as_string}"
                                     );
                                     continue;
                                 }
-                                info!(
+                                debug!(
                                     "Received PublicKeyRequest from {}",
                                     sender_public_ed25519_key_string
                                 );

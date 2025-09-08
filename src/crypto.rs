@@ -90,7 +90,7 @@ pub fn encrypt_message(content: &str, identity: &MyIdentity) -> CryptoResult<(Ve
     // Get the ChaCha20Poly1305 cipher from the tuple
     let (cypher, _) = sender_key_tuple;
 
-    tracing::info!("Using sender key ID {}", identity.current_key_id);
+    tracing::debug!("Using sender key ID {}", identity.current_key_id);
 
     let nonce = ChaCha20Poly1305::generate_nonce(&mut ChaChaOsRng); // 96-bits; unique per message
 
@@ -118,7 +118,7 @@ pub fn decrypt_message(
     nonce_bytes: &[u8],
     peer_identity: &PeerIdentity,
 ) -> CryptoResult<PlaintextPayload> {
-    info!(
+    debug!(
         "Decrypting message from sender_public_key_hash: {}, key_id: {}, peer_identity: {:?}",
         sender_public_key_hash_hex, key_id, peer_identity
     );
@@ -192,7 +192,7 @@ pub fn create_encrypted_chat_packet(content: &str, my_identity: &MyIdentity) -> 
     // let sender_public_key_hash = hasher.finalize().to_vec();
 
     // Log the public key hash in hex format for easier reading
-    info!(
+    debug!(
         "Sender public key hash (SHA256) in hex: {}",
         hex::encode(my_identity.get_my_verifying_key_sha256hash_as_bytes())
     );
@@ -344,7 +344,7 @@ debug!("Encryption - Shared secret (first 8 bytes): {:?}", &shared_secret.as_byt
 // ) -> Result<Vec<ChatPacket>> {
 //     let mut packets_to_send = Vec::new();
 //     for recipient_public_key_hash in peer_identity.get_peer_verifying_key() {
-//         info!(
+//         debug!(
 //             "Creating key distribution for recipient {}",
 //             recipient_public_key_hash
 //         );
@@ -356,7 +356,7 @@ debug!("Encryption - Shared secret (first 8 bytes): {:?}", &shared_secret.as_byt
 //         match create_key_distribution(my_identity, peer_identity, recipient_public_key_hash) {
 //             Ok(kd_packet) => {
 //                 // Add this packet to the list to send
-//                 info!(
+//                 debug!(
 //                     "Created key distribution for recipient {}",
 //                     recipient_public_key_hash
 //                 );

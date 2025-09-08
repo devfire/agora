@@ -47,7 +47,7 @@ impl MessageProcessor {
             },
             
             Err(CryptoError::UnknownSender { sender_hash }) => {
-                info!("Unknown sender {}, buffering message", sender_hash);
+                debug!("Unknown sender {}, buffering message", sender_hash);
                 
                 // Buffer the message
                 self.pending_messages
@@ -64,7 +64,7 @@ impl MessageProcessor {
             },
             
             Err(CryptoError::UnknownKeyId { key_id, sender_hash }) => {
-                info!("Unknown key_id {} for {}, buffering message", key_id, sender_hash);
+                debug!("Unknown key_id {} for {}, buffering message", key_id, sender_hash);
                 
                 // Buffer the message
                 self.pending_messages
@@ -94,7 +94,7 @@ impl MessageProcessor {
         
         // Process buffered messages
         if let Some(messages) = self.pending_messages.remove(&sender_hash) {
-            info!("Processing {} buffered messages from {}", messages.len(), sender_hash);
+            debug!("Processing {} buffered messages from {}", messages.len(), sender_hash);
             
             for msg in messages {
                 // Try to decrypt and display
@@ -126,7 +126,7 @@ impl MessageProcessor {
             packet_type: Some(PacketType::PublicKeyRequest(pk_request))
         };
         
-        info!("Requesting public key for {}", requested_sender_hash);
+        debug!("Requesting public key for {}", requested_sender_hash);
         self.network_manager.send_message(packet).await
     }
     
@@ -136,7 +136,7 @@ impl MessageProcessor {
         let my_hash = hex::encode(self.my_identity.get_my_verifying_key_sha256hash_as_bytes());
         
         if requested_hash == my_hash {
-            info!("Sending our public key to requester");
+            debug!("Sending our public key to requester");
             
             let announcement = create_public_key_announcement(&self.my_identity).await;
             self.network_manager.send_message(announcement).await?;
@@ -179,7 +179,7 @@ impl MessageSender {
         };
         
         self.network_manager.send_message(packet).await?;
-        info!("Message sent to {}: {}", recipient_hash, content);
+        debug!("Message sent to {}: {}", recipient_hash, content);
         
         Ok(()) // Fire and forget
     }

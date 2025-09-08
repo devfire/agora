@@ -5,7 +5,7 @@ use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::Digest;
 use ssh_key::PrivateKey;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
@@ -74,7 +74,7 @@ impl PeerIdentity {
         let sender_public_key_sha256 = hasher.finalize().to_vec();
         let sender_public_key_hash = get_public_key_hash_as_hex_string(&sender_public_key_sha256);
         if self.peer_x25519_keys.contains_key(&sender_public_key_hash) {
-            info!(
+            debug!(
                 "Peer key {} already exists, skipping",
                 sender_public_key_hash
             );
@@ -84,7 +84,7 @@ impl PeerIdentity {
             .insert(sender_public_key_hash.clone(), x25519_public);
         self.peer_verifying_keys
             .insert(sender_public_key_hash.clone(), verifying_key);
-        info!(
+        debug!(
             "Added peer keys from {} successfully",
             sender_public_key_hash
         );
@@ -100,7 +100,7 @@ impl PeerIdentity {
     }
 
     // pub fn list_known_peers(&self) -> Vec<&String> {
-    //     info!("Listing {:?} known peers", self.peer_x25519_keys);
+    //     debug!("Listing {:?} known peers", self.peer_x25519_keys);
     //     self.peer_x25519_keys.keys().collect()
     // }
 }
@@ -211,7 +211,7 @@ impl MyIdentity {
         let mut hasher = sha2::Sha256::default();
         hasher.update(verifying_key.as_bytes());
         let sender_public_key_hash = hex::encode(hasher.finalize().to_vec());
-        info!(
+        debug!(
             "Loaded identity '{}', sender_public_key_hash {}",
             display_name, sender_public_key_hash
         );

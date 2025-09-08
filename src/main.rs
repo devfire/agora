@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     // sorry, rustyline :)
     let filter_directives = format!("{}{}", args.log_level, ",rustyline=info");
 
-    info!("My tracing filter directives: {}", filter_directives);
+    debug!("My tracing filter directives: {}", filter_directives);
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    info!(
+    debug!(
         "Starting chat '{}' with multicast address {}",
         args.chat_id, args.multicast_address
     );
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         MyIdentity::new(key_path, &args.chat_id)?
     } else {
         // Use a default identity path if none provided
-        info!("No key file provided, using default identity");
+        debug!("No key file provided, using default identity");
         MyIdentity::new(Path::new("~/.ssh/id_ed25519"), &args.chat_id)?
     };
 
@@ -127,11 +127,11 @@ async fn main() -> anyhow::Result<()> {
     // Wait for any of the essential tasks to complete.
     // The stdin_input_handle is the only one designed to finish, triggering a shutdown.
     tokio::select! {
-        _ = udp_intake_handle => info!("UDP intake task completed unexpectedly."),
-        _ = display_handle => info!("Display task completed unexpectedly."),
-        _ = stdin_input_handle => info!("Stdin task complete. Shutting down."),
+        _ = udp_intake_handle => debug!("UDP intake task completed unexpectedly."),
+        _ = display_handle => debug!("Display task completed unexpectedly."),
+        _ = stdin_input_handle => debug!("Stdin task complete. Shutting down."),
     }
 
-    info!("Chat application shut down.");
+    debug!("Chat application shut down.");
     Ok(())
 }
