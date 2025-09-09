@@ -11,7 +11,7 @@ Agora enables multiple clients to establish secure, private communication in a p
 - **Dynamic Key Distribution**: Automated sender key distribution for group chat cryptography
 - **UDP Multicast Transport**: Efficient broadcast communication to all group members
 - **Peer Discovery**: Automatic public key exchange and peer identification
-- **Message Buffaloing**: Intelligence handling of messages from unknown senders with automatic key requests
+- **Message Buffering**: Intelligence handling of messages from unknown senders with automatic key requests
 
 ## Key Components
 
