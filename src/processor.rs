@@ -20,17 +20,17 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 // use anyhow::{anyhow};
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
-type EncryptedMessagesPendingDecryptionHashMap = HashMap<String, Vec<EncryptedMessage>>;
-type RequestedKeysHashSet = HashSet<String>;
+// type EncryptedMessagesPendingDecryptionHashMap = HashMap<String, Vec<EncryptedMessage>>;
+// type RequestedKeysHashSet = HashSet<String>;
 
 /// Responsible for all message processing. Messages with missing public keys get inserted into the pending_messages HashMap.
 /// Once a public key arrives, we check if there are any in this HashMap waiting to be decrypted.
@@ -108,8 +108,6 @@ impl Processor {
         tokio::spawn(async move {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
-            let mut pending_messages: EncryptedMessagesPendingDecryptionHashMap = HashMap::new();
-            // let mut requested_keys: RequestedKeysHashSet = HashSet::new();
             let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
 
             loop {
@@ -338,23 +336,6 @@ impl Processor {
                                     chacha20poly1305::Key::from_slice(shared_secret.as_bytes());
                                 let cipher = ChaCha20Poly1305::new(key);
 
-                                debug!(
-                                    "Decryption - My secret key (first 8 bytes): {:?}",
-                                    &my_identity.x25519_secret_key.as_bytes()[..8]
-                                );
-                                debug!(
-                                    "Decryption - Sender public key (first 8 bytes): {:?}",
-                                    &x25519_public_key_bytes[..8]
-                                );
-                                debug!(
-                                    "Decryption - Shared secret (first 8 bytes): {:?}",
-                                    &shared_secret.as_bytes()[..8]
-                                );
-                                debug!("Decryption - Nonce: {:?}", nonce_bytes);
-                                debug!(
-                                    "Decryption - Encrypted data length: {}",
-                                    encrypted_key.len()
-                                );
                                 let decrypted_key = cipher
                                     .decrypt(nonce, encrypted_key)
                                     .map_err(|e| error!("Creating the decrypted_key failed: {}", e))
@@ -373,47 +354,7 @@ impl Processor {
                                     .entry(sender_key_hash_hex_string.clone())
                                     .or_insert_with(std::collections::HashMap::new)
                                     .insert(key_dist.key_id, sender_cipher);
-                                // }
-                                // None => {
-                                //     warn!(
-                                //         "Missing ed25519 public key hash string to look for the peer's x25519 public key."
-                                //     );
-                                //     // Request key (only once)
-                                //     // If this fails, that means we already asked, so let's not ask again.
-                                //     if requested_keys.insert(sender_key_hash_hex_string) {
-                                //         // ask for the public key of the mystery sender
-                                //         let public_key_request = create_public_key_request(
-                                //             &key_dist.sender_ed25519_public_key,
-                                //             &my_identity
-                                //                 .get_my_verifying_key_sha256hash_as_bytes(),
-                                //         )
-                                //         .await;
-
-                                //         debug!(
-                                //             "Asking {recipient_key_hash_hex_string} for their public key."
-                                //         );
-
-                                //         // Send it off, asking for the public key
-                                //         network_manager
-                                //             .send_message(public_key_request)
-                                //             .await
-                                //             .expect(
-                                //                 "Failed to send PublicKeyRequest packet",
-                                //             );
-                                //     }
-                                //     // Clear the current prompt line and print the message, then re-display prompt
-                                //     eprint!("\r\x1b[K"); // Carriage return and clear line
-
-                                //     eprint!("{} > ", chat_id); // Re-display the prompt
-                                // }
                             }
-
-                            // if key_dist.encrypted_sender_key.len() < 12 {
-                            //     error!("Encrypted data too short");
-                            //     continue;
-                            // }
-                            // }
-                            // }
 
                             // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
                             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
@@ -439,17 +380,13 @@ impl Processor {
                                 if peer_sender_public_key_as_hex_string
                                     == my_public_key_as_hex_string
                                 {
-                                    warn!("Talking to myself again, ignoring.");
+                                    debug!("Talking to myself again, ignoring.");
 
                                     eprint!("\r\x1b[K"); // Carriage return and clear line
 
                                     eprint!("{} > ", chat_id); // Re-display the prompt
                                     continue;
                                 }
-                                // debug!(
-                                //     "Received encrypted message from sender_public_key_hash: {}",
-                                //     peer_sender_public_key_as_hex_string
-                                // );
 
                                 // Handle encrypted message
                                 let plaintext_payload_result = decrypt_message(
@@ -474,37 +411,10 @@ impl Processor {
                                     Err(CryptoError::UnknownSender {
                                         sender_hash: sender_hash_as_string,
                                     }) => {
-                                        warn!(
+                                        debug!(
                                             "Wait, who is {sender_hash_as_string}? Let's send this msg to the naughty house for processing."
                                         );
 
-                                        // Append this message to the naughty msg HashMap
-                                        pending_messages
-                                            .entry(sender_hash_as_string.to_string())
-                                            .or_default()
-                                            .push(encrypted_msg.clone());
-
-                                        let my_public_key_hash_as_string =
-                                            get_public_key_hash_as_hex_string(
-                                                &my_identity
-                                                    .get_my_verifying_key_sha256hash_as_bytes(),
-                                            );
-
-                                        debug!(
-                                            "Asking {sender_hash_as_string} from {my_public_key_hash_as_string} for their public key."
-                                        );
-
-                                        debug!(
-                                            "Public key packet requested: {} requester: {}",
-                                            get_public_key_hash_as_hex_string(
-                                                &encrypted_msg.sender_public_key_hash
-                                            ),
-                                            my_public_key_hash_as_string
-                                        );
-                                        // Request key (only once)
-                                        // If this fails, that means we already asked, so let's not ask again.
-                                        // if requested_keys.insert(sender_hash_as_string.to_string())
-                                        // {
                                         // ask for the public key of the mystery sender
                                         let public_key_request = create_public_key_request(
                                             &encrypted_msg.sender_public_key_hash.clone(),
@@ -517,7 +427,7 @@ impl Processor {
                                             .send_message(public_key_request)
                                             .await
                                             .expect("Failed to send PublicKeyRequest packet");
-                                        // }
+
                                         // Clear the current prompt line and print the message, then re-display prompt
                                         eprint!("\r\x1b[K"); // Carriage return and clear line
 
@@ -658,15 +568,6 @@ impl Processor {
         })
     }
 
-    /// Deal with messages we cannot decrypt
-    // async fn handle_missing_public_key(
-    //     &mut self,
-    //     sender_hash_as_string: &str,
-    //     my_identity: &MyIdentity,
-    //     encrypted_msg: &EncryptedMessage,
-    // ) {
-
-    // }
     /// Spawn a task to handle user input from stdin.
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
     pub fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {

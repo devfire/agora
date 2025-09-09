@@ -122,9 +122,6 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Wait for tasks to complete (they run indefinitely)
-    // let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-    // tokio::join!(udp_intake_handle, display_handle, stdin_input_handle);
-    // Wait for any of the essential tasks to complete.
     // The stdin_input_handle is the only one designed to finish, triggering a shutdown.
     tokio::select! {
         _ = udp_intake_handle => debug!("UDP intake task completed unexpectedly."),
