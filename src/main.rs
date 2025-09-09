@@ -9,8 +9,10 @@ pub mod identity;
 type SenderKey = (ChaCha20Poly1305, [u8; 32]);
 
 mod crypto;
+mod message_buffer;
 mod network;
 mod processor;
+
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
@@ -27,7 +29,7 @@ pub mod chat_message {
 
 use std::{path::Path, sync::Arc};
 
-use tracing::{Level, debug, error, info};
+use tracing::{Level, debug, error};
 
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]
@@ -122,9 +124,6 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Wait for tasks to complete (they run indefinitely)
-    // let _result = tokio::try_join!(udp_intake_handle, display_handle, stdin_input_handle)?;
-    // tokio::join!(udp_intake_handle, display_handle, stdin_input_handle);
-    // Wait for any of the essential tasks to complete.
     // The stdin_input_handle is the only one designed to finish, triggering a shutdown.
     tokio::select! {
         _ = udp_intake_handle => debug!("UDP intake task completed unexpectedly."),

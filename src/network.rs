@@ -3,7 +3,7 @@ use crate::ChatPacket;
 use prost::Message;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{debug, error, info};
+use tracing::error;
 
 use tokio::net::UdpSocket;
 
@@ -121,7 +121,7 @@ impl NetworkManager {
 
     /// Send a message to the multicast group
     pub async fn send_message(&self, packet: ChatPacket) -> Result<()> {
-        debug!("Sending packet: {:?}", packet);
+        // debug!("Sending packet: {:?}", packet); w
         if let Some(packet_to_send) = packet.packet_type {
             // Serialize the packet to bytes
             let packet_bytes = ChatPacket {
@@ -145,8 +145,6 @@ impl NetworkManager {
         let (len, _) = self.socket.recv_from(&mut buffer).await?;
         // Deserialize the received bytes into a ChatPacket
         let packet = ChatPacket::decode(&buffer[..len])?;
-
-        debug!("Received packet: {:?}", packet);
 
         Ok(packet)
     }

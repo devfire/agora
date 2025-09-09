@@ -5,7 +5,7 @@ use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::Digest;
 use ssh_key::PrivateKey;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
