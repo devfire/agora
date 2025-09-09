@@ -1,33 +1,25 @@
 use crate::{
-    chat_message::{
-        ChatPacket, EncryptedMessage, PlaintextPayload, PublicKeyAnnouncement,
-        chat_packet::PacketType,
-    },
+    chat_message::{ChatPacket, PlaintextPayload, PublicKeyAnnouncement, chat_packet::PacketType},
     crypto::{
         CryptoError, create_encrypted_chat_packet, create_public_key_announcement,
         create_public_key_request, create_sender_key_distribution, create_sha256, decrypt_message,
         get_public_key_hash_as_hex_string,
     },
     identity::{MyIdentity, PeerIdentity},
+    message_buffer::MessageBuffer,
     network,
 };
-use prost::Message;
 
-use anyhow::{Result, anyhow};
-use sha2::{Digest, Sha256};
+use anyhow::anyhow;
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::Aead};
 // use anyhow::{anyhow};
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashSet, sync::Arc};
 use subtle::ConstantTimeEq;
 
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 // type EncryptedMessagesPendingDecryptionHashMap = HashMap<String, Vec<EncryptedMessage>>;
 // type RequestedKeysHashSet = HashSet<String>;
@@ -108,36 +100,41 @@ impl Processor {
         tokio::spawn(async move {
             debug!("Starting UDP message intake task for agent '{}'", chat_id);
 
-            let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
+            // Track which peers we've already sent PublicKeyRequests to (to avoid infinite loops)
+            // Simple deduplication to prevent infinite loops
+            let mut requested_peer_keys: HashSet<String> = HashSet::new();
+            // let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
+
+            let mut message_buffer = MessageBuffer::new();
 
             loop {
                 match network_manager.receive_message().await {
                     Ok(packet) => {
-                        // Calculate packet hash for deduplication
-                        let packet_bytes = packet.encode_to_vec();
-                        let mut hasher = Sha256::default();
-                        hasher.update(&packet_bytes);
-                        let packet_hash = hasher.finalize().to_vec();
+                        // // Calculate packet hash for deduplication
+                        // let packet_bytes = packet.encode_to_vec();
+                        // let mut hasher = Sha256::default();
+                        // hasher.update(&packet_bytes);
+                        // let packet_hash = hasher.finalize().to_vec();
 
-                        // Check if we've seen this packet recently (within 30 seconds)
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        if let Some(&timestamp) = seen_packets.get(&packet_hash) {
-                            if now - timestamp < 30 {
-                                debug!("Ignoring duplicate packet");
-                                continue;
-                            }
-                        }
+                        // // Check if we've seen this packet recently (within 30 seconds)
+                        // let now = SystemTime::now()
+                        //     .duration_since(UNIX_EPOCH)
+                        //     .unwrap()
+                        //     .as_secs();
+                        // if let Some(&timestamp) = seen_packets.get(&packet_hash) {
+                        //     if now - timestamp < 30 {
+                        //         debug!("Ignoring duplicate packet");
+                        //         continue;
+                        //     }
+                        // }
 
-                        // Add to seen packets with current timestamp
-                        seen_packets.insert(packet_hash, now);
+                        // // Add to seen packets with current timestamp
+                        // seen_packets.insert(packet_hash, now);
 
-                        // Clean up old entries (packets older than 30 seconds)
-                        seen_packets.retain(|_, &mut timestamp| now - timestamp < 30);
+                        // // Clean up old entries (packets older than 30 seconds)
+                        // seen_packets.retain(|_, &mut timestamp| now - timestamp < 30);
 
-                        debug!("Received ChatPacket: {:?}", packet);
+                        // debug!("Received ChatPacket: {:?}", packet);
                         match packet.packet_type {
                             Some(PacketType::PublicKey(announcement)) => {
                                 debug!(
@@ -171,6 +168,10 @@ impl Processor {
                                 // Add peer keys to peer identity
                                 // TODO: Filter out self-sent announcements
                                 debug!("Adding peer keys for '{}'", announcement.display_name);
+
+                                // Don't clear tracking - this prevents infinite loops
+                                // For rejoining peers, we'll handle fresh key exchange via reactive requests
+
                                 peer_identity
                                     .add_peer_keys(
                                         // NOTE: internally, this uses the hex-encoded SHA256 hash of the Ed25519 public key as the identifier
@@ -179,7 +180,10 @@ impl Processor {
                                     )
                                     .expect("Failed to add peer keys");
 
-                                debug!("Current peers: {:?}", peer_identity.peer_x25519_keys.keys());
+                                debug!(
+                                    "Current peers: {:?}",
+                                    peer_identity.peer_x25519_keys.keys()
+                                );
 
                                 // Let's see if this is a new peer coming online
 
@@ -209,28 +213,11 @@ impl Processor {
                                     ))
                                 );
 
-                                // Proactively request the peer's sender key to ensure bidirectional key exchange
-                                let peer_public_key_hash =
-                                    create_sha256(&announcement.ed25519_public_key);
+                                // No proactive key requests - we'll request keys reactively when we fail to decrypt messages
+                                // This prevents infinite loops while still supporting rejoining peers
                                 debug!(
-                                    "Proactively requesting sender key from new peer '{}' (hash: {})",
-                                    announcement.display_name,
-                                    get_public_key_hash_as_hex_string(&peer_public_key_hash)
-                                );
-
-                                let public_key_request = create_public_key_request(
-                                    &peer_public_key_hash,
-                                    &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-                                )
-                                .await;
-
-                                network_manager
-                                    .send_message(public_key_request)
-                                    .await
-                                    .expect("Failed to send proactive PublicKeyRequest");
-
-                                debug!(
-                                    "Sent proactive PublicKeyRequest to establish bidirectional key exchange"
+                                    "Received PublicKeyAnnouncement from '{}', keys stored. Will request sender keys if needed when messages arrive.",
+                                    announcement.display_name
                                 );
 
                                 // Now, let's create a PlaintextPayload to announce the new user
@@ -354,6 +341,37 @@ impl Processor {
                                     .entry(sender_key_hash_hex_string.clone())
                                     .or_insert_with(std::collections::HashMap::new)
                                     .insert(key_dist.key_id, sender_cipher);
+
+                                // now let's see if we have any messages pending decryption
+                                let buffered = message_buffer
+                                    .take_sender_messages(&sender_key_hash_hex_string);
+                                for msg in buffered {
+                                    // Retry decryption with new keys
+                                    let plaintext_result_result = decrypt_message(
+                                        &sender_key_hash_hex_string,
+                                        msg.key_id,
+                                        &msg.encrypted_payload,
+                                        &msg.nonce,
+                                        &peer_identity,
+                                    );
+                                    // Handle result...
+
+                                    match plaintext_result_result {
+                                        Ok(plaintext_payload) => {
+                                            debug!(
+                                                "Forwarding message from '{}'",
+                                                plaintext_payload.display_name
+                                            );
+                                            message_sender
+                                                .send(plaintext_payload.clone())
+                                                .await
+                                                .expect("Failed to send message");
+                                        }
+                                        Err(e) => {
+                                            error!("This is a permant failure to decrypt: {e}")
+                                        }
+                                    }
+                                }
                             }
 
                             // Let's handle the EncryptedMsg case to extract and forward the PlaintextPayload
@@ -415,26 +433,91 @@ impl Processor {
                                             "Wait, who is {sender_hash_as_string}? Let's send this msg to the naughty house for processing."
                                         );
 
-                                        // ask for the public key of the mystery sender
-                                        let public_key_request = create_public_key_request(
-                                            &encrypted_msg.sender_public_key_hash.clone(),
-                                            &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-                                        )
-                                        .await;
+                                        // When decryption fails (UnknownSender error):
+                                        if message_buffer.add_message(
+                                            get_public_key_hash_as_hex_string(
+                                                &encrypted_msg.sender_public_key_hash.clone(),
+                                            ),
+                                            &encrypted_msg,
+                                        ) {
+                                            debug!(
+                                                "Buffered message from {} for future decryption once the sender key arrives",
+                                                sender_hash_as_string
+                                            );
+                                        }
+                                        // Only send request if we haven't already requested from this peer
+                                        if !requested_peer_keys.contains(&sender_hash_as_string) {
+                                            // ask for the public key of the mystery sender
+                                            let public_key_request = create_public_key_request(
+                                                &encrypted_msg.sender_public_key_hash.clone(),
+                                                &my_identity
+                                                    .get_my_verifying_key_sha256hash_as_bytes(),
+                                            )
+                                            .await;
 
-                                        // Send it off, asking for the public key
-                                        network_manager
-                                            .send_message(public_key_request)
-                                            .await
-                                            .expect("Failed to send PublicKeyRequest packet");
+                                            // Send it off, asking for the public key
+                                            network_manager
+                                                .send_message(public_key_request)
+                                                .await
+                                                .expect("Failed to send PublicKeyRequest packet");
+
+                                            // Track that we've sent a request to this peer
+                                            requested_peer_keys
+                                                .insert(sender_hash_as_string.clone());
+
+                                            debug!(
+                                                "Sent reactive PublicKeyRequest for unknown sender"
+                                            );
+                                        } else {
+                                            debug!(
+                                                "Already sent PublicKeyRequest for unknown sender {}, skipping",
+                                                sender_hash_as_string
+                                            );
+                                        }
 
                                         // Clear the current prompt line and print the message, then re-display prompt
                                         eprint!("\r\x1b[K"); // Carriage return and clear line
-
                                         eprint!("{} > ", chat_id); // Re-display the prompt
                                     }
                                     Err(e) => {
-                                        // all other errors will handle later
+                                        // For other decryption errors (like "Invalid message format" from rejoining peers),
+                                        // also try requesting fresh keys reactively
+                                        let sender_hash_hex = get_public_key_hash_as_hex_string(
+                                            &encrypted_msg.sender_public_key_hash,
+                                        );
+
+                                        debug!(
+                                            "Failed to decrypt message from known peer '{}': {}. Requesting fresh keys.",
+                                            sender_hash_hex, e
+                                        );
+
+                                        // Only send request if we haven't already requested from this peer
+                                        if !requested_peer_keys.contains(&sender_hash_hex) {
+                                            let public_key_request = create_public_key_request(
+                                                &encrypted_msg.sender_public_key_hash.clone(),
+                                                &my_identity
+                                                    .get_my_verifying_key_sha256hash_as_bytes(),
+                                            )
+                                            .await;
+
+                                            network_manager
+                                                .send_message(public_key_request)
+                                                .await
+                                                .expect("Failed to send PublicKeyRequest packet");
+
+                                            // Track that we've sent a request to this peer
+                                            requested_peer_keys.insert(sender_hash_hex.clone());
+
+                                            debug!(
+                                                "Sent reactive PublicKeyRequest for decryption failure"
+                                            );
+                                        } else {
+                                            debug!(
+                                                "Already sent PublicKeyRequest for peer {}, skipping",
+                                                sender_hash_hex
+                                            );
+                                        }
+
                                         error!("Error handling encrypted message: {}", e);
                                     }
                                 }
@@ -465,11 +548,6 @@ impl Processor {
                                     );
                                     continue;
                                 }
-                                debug!(
-                                    "Received PublicKeyRequest from {}",
-                                    sender_public_ed25519_key_string
-                                );
-                                // TODO: handle the public key request if necessary
 
                                 let announcement =
                                     create_public_key_announcement(&my_identity).await;
@@ -536,24 +614,39 @@ impl Processor {
 
                                     // If we don't have the requester's x25519 key, we need to request their PublicKeyAnnouncement
                                     // This ensures bidirectional key exchange when one peer missed the initial announcement
-                                    debug!(
-                                        "Requesting requester's PublicKeyAnnouncement to complete key exchange"
-                                    );
-
-                                    let reciprocal_request = create_public_key_request(
+                                    let requester_hash_hex = get_public_key_hash_as_hex_string(
                                         &request.requester_public_key_hash,
-                                        &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
-                                    )
-                                    .await;
-
-                                    network_manager
-                                        .send_message(reciprocal_request)
-                                        .await
-                                        .expect("Failed to send reciprocal PublicKeyRequest");
-
-                                    debug!(
-                                        "Sent reciprocal PublicKeyRequest to complete bidirectional key exchange"
                                     );
+
+                                    // Only send reciprocal request if we haven't already requested from this peer
+                                    if !requested_peer_keys.contains(&requester_hash_hex) {
+                                        debug!(
+                                            "Requesting requester's PublicKeyAnnouncement to complete key exchange"
+                                        );
+
+                                        let reciprocal_request = create_public_key_request(
+                                            &request.requester_public_key_hash,
+                                            &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                        )
+                                        .await;
+
+                                        network_manager
+                                            .send_message(reciprocal_request)
+                                            .await
+                                            .expect("Failed to send reciprocal PublicKeyRequest");
+
+                                        // Track that we've sent a request to this peer
+                                        requested_peer_keys.insert(requester_hash_hex.clone());
+
+                                        debug!(
+                                            "Sent reciprocal PublicKeyRequest to complete bidirectional key exchange"
+                                        );
+                                    } else {
+                                        debug!(
+                                            "Already sent PublicKeyRequest to requester '{}', skipping duplicate request",
+                                            requester_hash_hex
+                                        );
+                                    }
                                 }
                             }
 

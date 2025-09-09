@@ -9,8 +9,10 @@ pub mod identity;
 type SenderKey = (ChaCha20Poly1305, [u8; 32]);
 
 mod crypto;
+mod message_buffer;
 mod network;
 mod processor;
+
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
@@ -27,7 +29,7 @@ pub mod chat_message {
 
 use std::{path::Path, sync::Arc};
 
-use tracing::{Level, debug, error, info};
+use tracing::{Level, debug, error};
 
 /// This application initializes the chat client, sets up logging, and starts the network listener.
 #[tokio::main]

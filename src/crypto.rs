@@ -7,7 +7,7 @@ use chacha20poly1305::{
 use prost::{DecodeError, Message};
 
 use anyhow::{Result, anyhow, bail};
-use tracing::{debug, info};
+use tracing::debug;
 
 use sha2::Digest;
 
