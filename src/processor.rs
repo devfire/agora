@@ -103,8 +103,28 @@ impl Processor {
             // Track which peers we've already sent PublicKeyRequests to (to avoid infinite loops)
             // Simple deduplication to prevent infinite loops
             let mut requested_peer_keys: HashSet<String> = HashSet::new();
-            // let mut seen_packets: HashMap<Vec<u8>, u64> = HashMap::new();
 
+            /*
+                How this message buffering thing works.
+
+                For New Peers:
+
+                Peer announces → Keys stored locally
+                When they send encrypted messages → If decryption fails, send PublicKeyRequest
+                They respond with fresh keys → Messages can now be decrypted
+
+                For Rejoining Peers:
+
+                Peer rejoins with same identity but new sender keys
+                When they send encrypted messages → Decryption fails ("Invalid message format")
+                Reactive system detects failure and sends PublicKeyRequest
+                Fresh key exchange occurs → Messages can be decrypted
+                No Infinite Loops:
+
+                Requests are only sent in response to actual decryption failures
+                Deduplication prevents multiple requests to the same peer
+                No reciprocal request chains since requests are demand-driven
+            */
             let mut message_buffer = MessageBuffer::new();
 
             loop {
@@ -169,8 +189,18 @@ impl Processor {
                                 // TODO: Filter out self-sent announcements
                                 debug!("Adding peer keys for '{}'", announcement.display_name);
 
-                                // Don't clear tracking - this prevents infinite loops
-                                // For rejoining peers, we'll handle fresh key exchange via reactive requests
+                                // Calculate peer hash for tracking management
+                                let peer_public_key_hash = create_sha256(&announcement.ed25519_public_key);
+                                let peer_hash_hex = get_public_key_hash_as_hex_string(&peer_public_key_hash);
+                                
+                                // If this is a rejoining peer (we already have their keys), clear tracking
+                                // to allow fresh key requests. This won't cause infinite loops because
+                                // we only clear for peers we already know, not new ones.
+                                if peer_identity.peer_x25519_keys.contains_key(&peer_hash_hex) {
+                                    if requested_peer_keys.remove(&peer_hash_hex) {
+                                        debug!("Cleared PublicKeyRequest tracking for rejoining peer '{}'", peer_hash_hex);
+                                    }
+                                }
 
                                 peer_identity
                                     .add_peer_keys(
@@ -335,12 +365,25 @@ impl Processor {
                                 let sender_key = Key::from_slice(&decrypted_key);
                                 let sender_cipher = ChaCha20Poly1305::new(sender_key);
 
-                                // Add the key to peer_identity
-                                peer_identity
+                                // Add the key to peer_identity - this will replace any existing key with the same key_id
+                                let old_key_existed = peer_identity
                                     .peer_sender_keys
                                     .entry(sender_key_hash_hex_string.clone())
                                     .or_insert_with(std::collections::HashMap::new)
-                                    .insert(key_dist.key_id, sender_cipher);
+                                    .insert(key_dist.key_id, sender_cipher)
+                                    .is_some();
+                                
+                                if old_key_existed {
+                                    debug!(
+                                        "Replaced existing sender key for peer '{}' key_id {}",
+                                        sender_key_hash_hex_string, key_dist.key_id
+                                    );
+                                } else {
+                                    debug!(
+                                        "Added new sender key for peer '{}' key_id {}",
+                                        sender_key_hash_hex_string, key_dist.key_id
+                                    );
+                                }
 
                                 // now let's see if we have any messages pending decryption
                                 let buffered = message_buffer
@@ -479,24 +522,65 @@ impl Processor {
                                         eprint!("\r\x1b[K"); // Carriage return and clear line
                                         eprint!("{} > ", chat_id); // Re-display the prompt
                                     }
-                                    Err(e) => {
-                                        // For other decryption errors (like "Invalid message format" from rejoining peers),
-                                        // also try requesting fresh keys reactively
+                                    Err(CryptoError::UnknownKeyId { key_id, sender_public_key_hash_hex }) => {
+                                        debug!(
+                                            "Unknown key ID {} for sender '{}'. Requesting fresh keys.",
+                                            key_id, sender_public_key_hash_hex
+                                        );
+
+                                        // Buffer this message for later decryption once fresh keys arrive
+                                        if message_buffer.add_message(sender_public_key_hash_hex.clone(), &encrypted_msg) {
+                                            debug!(
+                                                "Buffered UnknownKeyId message from {} for future decryption once fresh sender keys arrive",
+                                                sender_public_key_hash_hex
+                                            );
+                                        }
+
+                                        // Only send request if we haven't already requested from this peer
+                                        if !requested_peer_keys.contains(&sender_public_key_hash_hex) {
+                                            let public_key_request = create_public_key_request(
+                                                &encrypted_msg.sender_public_key_hash.clone(),
+                                                &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
+                                            )
+                                            .await;
+
+                                            network_manager
+                                                .send_message(public_key_request)
+                                                .await
+                                                .expect("Failed to send PublicKeyRequest packet");
+
+                                            // Track that we've sent a request to this peer
+                                            requested_peer_keys.insert(sender_public_key_hash_hex);
+
+                                            debug!("Sent reactive PublicKeyRequest for unknown key ID");
+                                        } else {
+                                            debug!("Already sent PublicKeyRequest for peer {}, skipping", sender_public_key_hash_hex);
+                                        }
+                                    }
+                                    Err(CryptoError::InvalidFormat) => {
+                                        // Invalid format could indicate stale sender keys from rejoining peers
                                         let sender_hash_hex = get_public_key_hash_as_hex_string(
                                             &encrypted_msg.sender_public_key_hash,
                                         );
-
+                                        
                                         debug!(
-                                            "Failed to decrypt message from known peer '{}': {}. Requesting fresh keys.",
-                                            sender_hash_hex, e
+                                            "Invalid message format from peer '{}'. Could be stale keys, requesting fresh ones.",
+                                            sender_hash_hex
                                         );
+
+                                        // Buffer this message for later decryption once fresh keys arrive
+                                        if message_buffer.add_message(sender_hash_hex.clone(), &encrypted_msg) {
+                                            debug!(
+                                                "Buffered InvalidFormat message from {} for future decryption once fresh sender keys arrive",
+                                                sender_hash_hex
+                                            );
+                                        }
 
                                         // Only send request if we haven't already requested from this peer
                                         if !requested_peer_keys.contains(&sender_hash_hex) {
                                             let public_key_request = create_public_key_request(
                                                 &encrypted_msg.sender_public_key_hash.clone(),
-                                                &my_identity
-                                                    .get_my_verifying_key_sha256hash_as_bytes(),
+                                                &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                             )
                                             .await;
 
@@ -508,16 +592,16 @@ impl Processor {
                                             // Track that we've sent a request to this peer
                                             requested_peer_keys.insert(sender_hash_hex.clone());
 
-                                            debug!(
-                                                "Sent reactive PublicKeyRequest for decryption failure"
-                                            );
+                                            debug!("Sent reactive PublicKeyRequest for invalid format");
                                         } else {
-                                            debug!(
-                                                "Already sent PublicKeyRequest for peer {}, skipping",
-                                                sender_hash_hex
-                                            );
+                                            debug!("Already sent PublicKeyRequest for peer {}, skipping", sender_hash_hex);
                                         }
 
+                                        error!("Error handling encrypted message: Invalid message format");
+                                    }
+                                    Err(e) => {
+                                        // For other errors (like system errors, decode errors, etc.),
+                                        // don't request keys as they're not key-related issues
                                         error!("Error handling encrypted message: {}", e);
                                     }
                                 }
