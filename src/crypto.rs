@@ -61,11 +61,11 @@ pub trait SecurityLayer {
 
     fn create_public_key_announcement(&self, my_identity: &MyIdentity) -> PublicKeyAnnouncement;
 
-    async fn create_public_key_request(
+    fn create_public_key_request(
         &self,
         requested_public_key_hash: &[u8],
         requester_public_key_hash: &[u8],
-    ) -> ChatPacket;
+    ) -> impl std::future::Future<Output = ChatPacket> + Send + '_;
 
     /// Creates the canonical byte representation for signing.
     /// This must be deterministic and match verification.
@@ -150,12 +150,14 @@ impl SecurityLayer for MLSCrypto {
         todo!()
     }
 
-    async fn create_public_key_request(
+    fn create_public_key_request(
         &self,
         requested_public_key_hash: &[u8],
         requester_public_key_hash: &[u8],
-    ) -> ChatPacket {
-        todo!()
+    ) -> impl std::future::Future<Output = ChatPacket> + Send + '_ {
+        async move {
+            todo!()
+        }
     }
 
     fn create_signable_encrypted_message(&self, msg: &EncryptedMessage) -> Vec<u8> {
@@ -291,22 +293,27 @@ impl SecurityLayer for AgoraLegacyCrypto {
     }
 
     /// Fill out the missing public key TPS form
-    async fn create_public_key_request(
+    fn create_public_key_request(
         &self,
         requested_public_key_hash: &[u8],
         requester_public_key_hash: &[u8],
-    ) -> ChatPacket {
-        let public_key_request = PublicKeyRequest {
-            requested_public_key_hash: requested_public_key_hash.to_vec(),
-            requester_public_key_hash: requester_public_key_hash.to_vec(),
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Failed to get system time")
-                .as_nanos() as u64,
-        };
+    ) -> impl std::future::Future<Output = ChatPacket> + Send + '_ {
+        let requested_public_key_hash = requested_public_key_hash.to_vec();
+        let requester_public_key_hash = requester_public_key_hash.to_vec();
 
-        ChatPacket {
-            packet_type: Some(PacketType::PublicKeyRequest(public_key_request)),
+        async move {
+            let public_key_request = PublicKeyRequest {
+                requested_public_key_hash,
+                requester_public_key_hash,
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Failed to get system time")
+                    .as_nanos() as u64,
+            };
+
+            ChatPacket {
+                packet_type: Some(PacketType::PublicKeyRequest(public_key_request)),
+            }
         }
     }
 

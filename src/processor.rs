@@ -28,10 +28,10 @@ pub struct Processor<S: SecurityLayer> {
     pub network_manager: Arc<network::NetworkManager>,
     pub my_identity: MyIdentity,
     peer_identity: PeerIdentity,
-    pub security_module: S,
+    pub security_module: Arc<S>,
 }
 
-impl<S: SecurityLayer + Send + Sync> Processor<S> {
+impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
     pub fn new(
         network_manager: Arc<network::NetworkManager>,
         my_identity: MyIdentity,
@@ -42,7 +42,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
             network_manager,
             my_identity,
             peer_identity,
-            security_module,
+            security_module: Arc::new(security_module),
         }
     }
 
@@ -91,6 +91,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
         chat_id: &str,
     ) -> tokio::task::JoinHandle<()> {
         let network_manager = Arc::clone(&self.network_manager);
+        let security_module = Arc::clone(&self.security_module);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         let mut peer_identity = self.peer_identity.clone();
@@ -226,7 +227,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                     "Creating KeyDistribution packet for peer '{}'",
                                     announcement.display_name
                                 );
-                                let kd_packet = self.security_module.create_sender_key_distribution(
+                                let kd_packet = security_module.create_sender_key_distribution(
                                     &announcement,
                                     &my_identity,
                                     // &peer_identity,
@@ -394,7 +395,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                     .take_sender_messages(&sender_key_hash_hex_string);
                                 for msg in buffered {
                                     // Retry decryption with new keys
-                                    let plaintext_result_result = self.security_module.decrypt_message(
+                                    let plaintext_result_result = security_module.decrypt_message(
                                         &sender_key_hash_hex_string,
                                         msg.key_id,
                                         &msg.encrypted_payload,
@@ -454,7 +455,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                 }
 
                                 // Handle encrypted message
-                                let plaintext_payload_result = self.security_module.decrypt_message(
+                                let plaintext_payload_result = security_module.decrypt_message(
                                     &peer_sender_public_key_as_hex_string,
                                     encrypted_msg.key_id,
                                     &encrypted_msg.encrypted_payload,
@@ -495,7 +496,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                         // Only send request if we haven't already requested from this peer
                                         if !requested_peer_keys.contains(&sender_hash_as_string) {
                                             // ask for the public key of the mystery sender
-                                            let public_key_request = self.security_module.create_public_key_request(
+                                            let public_key_request = security_module.create_public_key_request(
                                                 &encrypted_msg.sender_public_key_hash.clone(),
                                                 &my_identity
                                                     .get_my_verifying_key_sha256hash_as_bytes(),
@@ -550,7 +551,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                         if !requested_peer_keys
                                             .contains(&sender_public_key_hash_hex)
                                         {
-                                            let public_key_request = self.security_module.create_public_key_request(
+                                            let public_key_request = security_module.create_public_key_request(
                                                 &encrypted_msg.sender_public_key_hash.clone(),
                                                 &my_identity
                                                     .get_my_verifying_key_sha256hash_as_bytes(),
@@ -598,7 +599,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
 
                                         // Only send request if we haven't already requested from this peer
                                         if !requested_peer_keys.contains(&sender_hash_hex) {
-                                            let public_key_request = self.security_module.create_public_key_request(
+                                            let public_key_request = security_module.create_public_key_request(
                                                 &encrypted_msg.sender_public_key_hash.clone(),
                                                 &my_identity
                                                     .get_my_verifying_key_sha256hash_as_bytes(),
@@ -662,7 +663,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                 }
 
                                 let announcement =
-                                    self.security_module.create_public_key_announcement(&my_identity);
+                                    security_module.create_public_key_announcement(&my_identity);
 
                                 debug!(
                                     "Responding to PublicKeyRequest with PublicKeyAnnouncement for '{}'",
@@ -708,7 +709,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                     };
 
                                     // Create KeyDistribution intended for the requester
-                                    let sender_key_packet = self.security_module.create_sender_key_distribution(
+                                    let sender_key_packet = security_module.create_sender_key_distribution(
                                         &requester_announcement,
                                         &my_identity,
                                     )
@@ -736,7 +737,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                                             "Requesting requester's PublicKeyAnnouncement to complete key exchange"
                                         );
 
-                                        let reciprocal_request = self.security_module.create_public_key_request(
+                                        let reciprocal_request = security_module.create_public_key_request(
                                             &request.requester_public_key_hash,
                                             &my_identity.get_my_verifying_key_sha256hash_as_bytes(),
                                         )
@@ -777,6 +778,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
     /// This task reads lines from stdin and sends them as messages to the network manager for multicasting out.
     pub fn spawn_stdin_input_task(&self, chat_id: &str) -> tokio::task::JoinHandle<()> {
         let network_manager = Arc::clone(&self.network_manager);
+        let security_module = Arc::clone(&self.security_module);
 
         let chat_id = chat_id.to_string(); // Clone chat_id to move into the task
         let my_identity = self.my_identity.clone();
@@ -804,7 +806,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                         // Create and send the chat message
                         debug!("Stdin input read line: {}", line);
 
-                        let encrypted_packet = create_encrypted_chat_packet(&line, &my_identity)
+                        let encrypted_packet = security_module.create_encrypted_chat_packet(&line, &my_identity)
                             .expect("Creating encrypted packet failed");
                         network_manager
                             .send_message(encrypted_packet)
@@ -813,7 +815,7 @@ impl<S: SecurityLayer + Send + Sync> Processor<S> {
                     }
                     Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
                         let encrypted_packet_bye_bye =
-                            create_encrypted_chat_packet(&mic_drop, &my_identity)
+                            security_module.create_encrypted_chat_packet(&mic_drop, &my_identity)
                                 .expect("Creating encrypted packet failed");
                         network_manager
                             .send_message(encrypted_packet_bye_bye)

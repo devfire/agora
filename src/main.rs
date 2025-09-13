@@ -43,7 +43,6 @@ async fn main() -> anyhow::Result<()> {
 
     debug!("My tracing filter directives: {}", filter_directives);
 
-    let security_impl = 
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
@@ -96,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let (message_sender, message_receiver) =
         tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
 
-    let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
+    let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity, crypto::AgoraLegacyCrypto);
 
     // Note the distinct lack of .await here - we want to spawn these tasks and let them run concurrently
     // rather than waiting for each to complete before starting the next.
@@ -113,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     debug!("Stdin input task spawned");
 
     let initial_public_key_announcement =
-        create_public_key_announcement(&processor.my_identity).await;
+        processor.security_module.create_public_key_announcement(&processor.my_identity);
 
     // put it into a packet
     let public_key_announcement_packet = ChatPacket {
