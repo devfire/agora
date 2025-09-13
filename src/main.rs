@@ -16,7 +16,7 @@ mod processor;
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
-    crypto::create_public_key_announcement,
+    crypto::SecurityLayer,
     identity::{MyIdentity, PeerIdentity},
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -42,6 +42,8 @@ async fn main() -> anyhow::Result<()> {
     let filter_directives = format!("{}{}", args.log_level, ",rustyline=info");
 
     debug!("My tracing filter directives: {}", filter_directives);
+
+    let security_impl = 
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
