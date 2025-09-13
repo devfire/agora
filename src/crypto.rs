@@ -24,6 +24,25 @@ use crate::{
     identity::{MyIdentity, PeerIdentity},
 };
 
+pub fn create_sha256(raw_bytes: &Vec<u8>) -> Vec<u8> {
+    let mut hasher = sha2::Sha256::default();
+
+    hasher.update(&raw_bytes);
+    hasher.finalize().to_vec()
+}
+
+/// Generate a SHA256 hash as a hex string of the verifying (public) key.
+/// This is used to identify the sender in messages.
+pub fn get_public_key_hash_as_hex_string(public_key_as_bytes: &[u8]) -> String {
+    // NOTE: it's not safe to directly convert the raw hash bytes (Vec<u8>) to a String.
+    // This is because a Rust String is required to be valid UTF-8,
+    // but the raw bytes of a SHA-256 hash are arbitrary binary data and have no guarantee of forming a valid UTF-8 sequence.
+    // Attempting a direct conversion will either fail or corrupt the data.
+    //
+    // But hex is totes awesome for this purpose. :)
+    hex::encode(&public_key_as_bytes)
+}
+
 pub trait SecurityLayer {
     fn encrypt_message(
         &self,
@@ -61,11 +80,7 @@ pub trait SecurityLayer {
         my_identity: &MyIdentity,
     ) -> Result<ChatPacket>;
 
-    fn create_sha256(&self, raw_bytes: &Vec<u8>) -> Vec<u8>;
-
     fn sign_message(&self, msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>>;
-
-    fn get_public_key_hash_as_hex_string(&self, public_key_as_bytes: &[u8]) -> String;
 
     fn create_sender_key_distribution(
         &self,
@@ -155,15 +170,7 @@ impl SecurityLayer for MLSCrypto {
         todo!()
     }
 
-    fn create_sha256(&self, raw_bytes: &Vec<u8>) -> Vec<u8> {
-        todo!()
-    }
-
     fn sign_message(&self, msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>> {
-        todo!()
-    }
-
-    fn get_public_key_hash_as_hex_string(&self, public_key_as_bytes: &[u8]) -> String {
         todo!()
     }
 
@@ -359,13 +366,6 @@ impl SecurityLayer for AgoraLegacyCrypto {
         hasher.finalize().to_vec()
     }
 
-    fn create_sha256(&self, raw_bytes: &Vec<u8>) -> Vec<u8> {
-        let mut hasher = sha2::Sha256::default();
-
-        hasher.update(&raw_bytes);
-        hasher.finalize().to_vec()
-    }
-
     /// Signs an EncryptedMessage and returns the signature
     fn sign_message(&self, msg: &EncryptedMessage, my_identity: &MyIdentity) -> Result<Vec<u8>> {
         // Create the data to sign by concatenating all fields
@@ -375,18 +375,6 @@ impl SecurityLayer for AgoraLegacyCrypto {
         let signature = my_identity.signing_key.sign(&data_to_sign);
 
         Ok(signature.to_bytes().to_vec())
-    }
-
-    /// Generate a SHA256 hash as a hex string of the verifying (public) key.
-    /// This is used to identify the sender in messages.
-    fn get_public_key_hash_as_hex_string(&self, public_key_as_bytes: &[u8]) -> String {
-        // NOTE: it's not safe to directly convert the raw hash bytes (Vec<u8>) to a String.
-        // This is because a Rust String is required to be valid UTF-8,
-        // but the raw bytes of a SHA-256 hash are arbitrary binary data and have no guarantee of forming a valid UTF-8 sequence.
-        // Attempting a direct conversion will either fail or corrupt the data.
-        //
-        // But hex is totes awesome for this purpose. :)
-        hex::encode(&public_key_as_bytes)
     }
 
     // Create encrypted sender key for a specific recipient
@@ -433,8 +421,7 @@ impl SecurityLayer for AgoraLegacyCrypto {
         let key_dist = chat_message::KeyDistribution {
             key_id: my_identity.current_key_id,
             encrypted_sender_key: [nonce.as_slice(), &encrypted_key].concat(),
-            recipient_public_key_hash: self
-                .create_sha256(&announcement.ed25519_public_key.to_vec()),
+            recipient_public_key_hash: create_sha256(&announcement.ed25519_public_key.to_vec()),
             sender_ed25519_public_key: my_identity.verifying_key.as_bytes().to_vec(),
             sender_x25519_public_key: my_identity.x25519_public_key.as_bytes().to_vec(),
         };

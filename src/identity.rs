@@ -9,7 +9,10 @@ use tracing::{debug, error};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::{SenderKey, crypto::SecurityLayer};
+use crate::{
+    SenderKey,
+    crypto::{SecurityLayer, get_public_key_hash_as_hex_string},
+};
 #[derive(Clone)]
 pub struct PeerIdentity {
     // NOTE: String here is actually a hex-encoded SHA256 hash of the peer's Ed25519 public key
