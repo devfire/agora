@@ -12,6 +12,7 @@ mod crypto;
 mod message_buffer;
 mod network;
 mod processor;
+mod packet_handler;
 
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
