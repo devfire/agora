@@ -25,6 +25,22 @@ pub struct PacketHandler<S: SecurityLayer> {
 }
 
 impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
+    /// Creates a new instance of PacketHandler with the specified dependencies.
+    ///
+    /// This constructor initializes a PacketHandler that coordinates the processing of various
+    /// packet types in the UDP intake loop, managing cryptographic operations and network communication.
+    ///
+    /// # Arguments
+    /// * `security_module` - The security layer implementation for cryptographic operations
+    /// * `my_identity` - This node's identity containing cryptographic keys and display name
+    /// * `network_manager` - Network manager for sending messages to peers
+    /// * `chat_id` - The chat identifier for this session
+    ///
+    /// # Returns
+    /// Returns a new PacketHandler instance configured with the provided dependencies.
+    ///
+    /// # Typical Usage
+    /// Called during application initialization to set up the packet processing infrastructure.
     pub fn new(
         security_module: Arc<S>,
         my_identity: MyIdentity,
@@ -39,6 +55,39 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         }
     }
 
+    /// Processes a public key announcement received from a peer in the chat network.
+    ///
+    /// This function handles the initial key exchange when a new peer joins the chat or re-announces
+    /// their presence. It validates the announcement isn't from the local user, updates the peer
+    /// identity database, distributes sender keys to enable encrypted communication, and broadcasts
+    /// a join notification to other peers.
+    ///
+    /// # Arguments
+    /// * `announcement` - The PublicKeyAnnouncement packet containing the peer's display name and cryptographic keys
+    /// * `peer_identity` - Mutable reference to the peer identity database to store new peer information
+    /// * `message_sender` - Async channel for forwarding join notifications to the application
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the announcement was processed successfully.
+    /// Returns an error if there are issues with key processing or network communication.
+    ///
+    /// # Behavior
+    /// - **Self-filtering**: Ignores announcements from the local user to prevent infinite loops
+    /// - **Peer registration**: Adds the peer's X25519 and Ed25519 keys to the identity database
+    /// - **Key distribution**: Sends encrypted sender keys to the new peer for bidirectional communication
+    /// - **Rejoining handling**: Clears stale key requests for peers rejoining the chat
+    /// - **Join notification**: Forwards a plaintext join message unless it's the local user
+    ///
+    /// # Security Considerations
+    /// - Uses constant-time comparison to prevent timing attacks when checking self-identity
+    /// - Validates peer keys before storage and usage
+    /// - Ensures only legitimate peers can initiate key exchange
+    ///
+    /// # Typical Usage
+    /// Called automatically when a PublicKeyAnnouncement packet is received from the network layer.
+    /// This enables the distributed key exchange protocol that establishes secure communication
+    /// channels between all participants in the chat.
     pub async fn handle_public_key_announcement(
         &self,
         announcement: PublicKeyAnnouncement,
@@ -124,6 +173,40 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         Ok(())
     }
 
+    /// Processes a key distribution packet to establish decryption capability for a peer's messages.
+    ///
+    /// This function handles the reception of encrypted sender keys from peers, enabling the local
+    /// node to decrypt future messages from that sender. It validates the packet is intended for
+    /// this node, decrypts the sender key using Diffie-Hellman shared secret derivation, stores
+    /// the key for future use, and processes any buffered messages that were waiting for this key.
+    ///
+    /// # Arguments
+    /// * `key_dist` - The KeyDistribution packet containing encrypted sender key and metadata
+    /// * `peer_identity` - Mutable reference to peer identity database for storing decrypted keys
+    /// * `message_buffer` - Mutable reference to buffer containing messages awaiting decryption keys
+    /// * `message_sender` - Async channel for forwarding successfully decrypted plaintext payloads
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the key distribution was processed successfully.
+    /// Returns an error if cryptographic operations fail or network communication issues occur.
+    ///
+    /// # Behavior
+    /// - **Recipient validation**: Ignores packets not intended for this node (different recipient hash)
+    /// - **Cryptographic decryption**: Uses X25519 Diffie-Hellman to decrypt the sender key
+    /// - **Key storage**: Stores the decrypted sender key mapped by sender hash and key ID
+    /// - **Buffer processing**: Attempts to decrypt and forward any previously buffered messages
+    /// - **Key replacement**: Handles replacement of existing keys with the same ID
+    ///
+    /// # Security Considerations
+    /// - Validates packet recipient to prevent key theft attacks
+    /// - Uses authenticated encryption (ChaCha20Poly1305) for key transmission
+    /// - Employs Diffie-Hellman key exchange for forward secrecy
+    /// - Stores keys securely in peer identity database
+    ///
+    /// # Typical Usage
+    /// Called automatically when a KeyDistribution packet is received from the network layer.
+    /// This completes the key exchange handshake initiated by public key announcements,
+    /// enabling bidirectional encrypted communication with the sending peer.
     pub async fn handle_key_distribution(
         &self,
         key_dist: crate::chat_message::KeyDistribution,
@@ -473,6 +556,28 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         }
     }
 
+    /// Handles decryption failure due to unknown sender by buffering the message and requesting peer keys.
+    ///
+    /// This function is called when an encrypted message cannot be decrypted because the sender's
+    /// public key is not known to this node. It buffers the message for later processing and
+    /// initiates a request for the sender's public key information.
+    ///
+    /// # Arguments
+    /// * `sender_hash_as_string` - Hex string hash identifying the unknown sender
+    /// * `encrypted_msg` - The encrypted message that failed to decrypt
+    /// * `message_buffer` - Mutable reference to buffer for storing undecryptable messages
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the unknown sender situation was handled appropriately.
+    ///
+    /// # Behavior
+    /// - Buffers the encrypted message for future decryption once keys are received
+    /// - Sends a public key request to obtain the sender's cryptographic keys
+    /// - Prevents duplicate requests by checking the requested_peer_keys set
+    ///
+    /// # Typical Usage
+    /// Called by handle_decryption_error when CryptoError::UnknownSender occurs.
     async fn handle_unknown_sender(
         &self,
         sender_hash_as_string: String,
@@ -506,6 +611,29 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         Ok(())
     }
 
+    /// Handles decryption failure due to unknown key ID by buffering the message and requesting fresh keys.
+    ///
+    /// This function manages the case where an encrypted message uses a key ID that is not
+    /// currently known to this node, typically indicating the sender has rotated keys.
+    /// It buffers the message and requests updated key information from the sender.
+    ///
+    /// # Arguments
+    /// * `key_id` - The unknown key ID that caused the decryption failure
+    /// * `sender_public_key_hash_hex` - Hex string of the sender's public key hash
+    /// * `encrypted_msg` - The encrypted message that failed to decrypt
+    /// * `message_buffer` - Mutable reference to buffer for storing undecryptable messages
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the unknown key ID situation was handled appropriately.
+    ///
+    /// # Behavior
+    /// - Buffers the encrypted message for future decryption with the correct key
+    /// - Requests fresh keys from the known sender
+    /// - Logs the specific key ID that was missing
+    ///
+    /// # Typical Usage
+    /// Called by handle_decryption_error when CryptoError::UnknownKeyId occurs.
     async fn handle_unknown_key_id(
         &self,
         key_id: u32,
@@ -534,6 +662,27 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         .await
     }
 
+    /// Handles decryption failure due to invalid message format by buffering and requesting fresh keys.
+    ///
+    /// This function addresses decryption failures caused by message format issues, which may
+    /// indicate stale or corrupted encryption keys. It buffers the message and requests
+    /// updated cryptographic keys from the sender.
+    ///
+    /// # Arguments
+    /// * `encrypted_msg` - The encrypted message with invalid format
+    /// * `message_buffer` - Mutable reference to buffer for storing undecryptable messages
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the invalid format situation was handled appropriately.
+    ///
+    /// # Behavior
+    /// - Buffers the message for future processing with correct keys
+    /// - Requests fresh keys due to potential key staleness
+    /// - Logs an error indicating the format issue
+    ///
+    /// # Typical Usage
+    /// Called by handle_decryption_error when CryptoError::InvalidFormat occurs.
     async fn handle_invalid_format(
         &self,
         encrypted_msg: &crate::chat_message::EncryptedMessage,
@@ -566,6 +715,29 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         Ok(())
     }
 
+    /// Sends a public key request to a peer if one hasn't been sent recently.
+    ///
+    /// This function manages the deduplication of public key requests to prevent flooding
+    /// the network with duplicate requests. It checks if a request has already been sent
+    /// for the specified peer and only sends a new request if necessary.
+    ///
+    /// # Arguments
+    /// * `sender_hash` - Hex string hash of the peer whose keys are needed
+    /// * `sender_public_key_hash` - Raw bytes of the sender's public key hash
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the key request was sent or was already pending.
+    /// Returns an error if network communication fails.
+    ///
+    /// # Behavior
+    /// - Checks if a key request has already been sent for this peer
+    /// - Creates and sends a public key request packet if needed
+    /// - Updates the tracking set to prevent duplicate requests
+    /// - Logs the request action for debugging
+    ///
+    /// # Typical Usage
+    /// Called by various error handlers when cryptographic keys are missing and need to be requested.
     async fn request_public_key_if_needed(
         &self,
         sender_hash: &str,
@@ -596,6 +768,29 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         Ok(())
     }
 
+    /// Processes a public key request from a peer and responds with this node's key information.
+    ///
+    /// This function handles incoming requests for public key information by sending back
+    /// the local node's public key announcement and attempting to send key distribution
+    /// if the requester's keys are already known.
+    ///
+    /// # Arguments
+    /// * `request` - The PublicKeyRequest packet containing requester's key information
+    /// * `peer_identity` - Peer identity database containing known peer keys
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the request was processed successfully.
+    /// Returns an error if network communication or key processing fails.
+    ///
+    /// # Behavior
+    /// - Ignores requests from the local node to prevent self-communication
+    /// - Sends a public key announcement containing this node's cryptographic keys
+    /// - Attempts to send key distribution if requester's X25519 key is known
+    /// - Falls back to reciprocal key request if requester's key is unknown
+    ///
+    /// # Typical Usage
+    /// Called when a PublicKeyRequest packet is received from the network layer.
     pub async fn handle_public_key_request(
         &self,
         request: crate::chat_message::PublicKeyRequest,
@@ -633,6 +828,29 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
             .await
     }
 
+    /// Attempts to send key distribution to a peer if their X25519 key is available.
+    ///
+    /// This function checks if the requester's X25519 public key is known and, if so,
+    /// creates and sends an encrypted sender key distribution packet. If the key is not
+    /// known, it initiates a reciprocal key request.
+    ///
+    /// # Arguments
+    /// * `request` - The PublicKeyRequest containing the requester's key information
+    /// * `peer_identity` - Peer identity database for looking up requester's keys
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if key distribution was sent or reciprocal request initiated.
+    /// Returns an error if cryptographic operations or network communication fails.
+    ///
+    /// # Behavior
+    /// - Looks up the requester's X25519 public key in the peer identity database
+    /// - Creates an encrypted sender key distribution packet if key is available
+    /// - Sends the key distribution packet over the network
+    /// - Initiates reciprocal key request if requester's key is unknown
+    ///
+    /// # Typical Usage
+    /// Called by handle_public_key_request to complete the key exchange handshake.
     async fn send_key_distribution_if_possible(
         &self,
         request: &crate::chat_message::PublicKeyRequest,
@@ -667,6 +885,28 @@ impl<S: SecurityLayer + Send + Sync + 'static> PacketHandler<S> {
         Ok(())
     }
 
+    /// Sends a reciprocal public key request to complete bidirectional key exchange.
+    ///
+    /// This function sends a public key request back to a peer who requested keys,
+    /// ensuring that both parties have each other's cryptographic information for
+    /// establishing bidirectional encrypted communication.
+    ///
+    /// # Arguments
+    /// * `request` - The original PublicKeyRequest that triggered this reciprocal request
+    /// * `requested_peer_keys` - Mutable set tracking which peers have had key requests sent
+    ///
+    /// # Returns
+    /// Returns `Ok(())` if the reciprocal request was sent successfully.
+    /// Returns an error if network communication fails.
+    ///
+    /// # Behavior
+    /// - Checks if a reciprocal request has already been sent
+    /// - Creates a public key request packet for the original requester
+    /// - Sends the request to complete the key exchange
+    /// - Updates tracking to prevent duplicate requests
+    ///
+    /// # Typical Usage
+    /// Called when a peer requests keys but their X25519 key is not yet known locally.
     async fn send_reciprocal_request(
         &self,
         request: &crate::chat_message::PublicKeyRequest,
