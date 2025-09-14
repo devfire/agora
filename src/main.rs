@@ -12,11 +12,12 @@ mod crypto;
 mod message_buffer;
 mod network;
 mod processor;
+mod packet_handler;
 
 use crate::{
     chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     cli::ChatArgs,
-    crypto::create_public_key_announcement,
+    crypto::SecurityLayer,
     identity::{MyIdentity, PeerIdentity},
     network::{NetworkConfig, NetworkManager},
     processor::Processor,
@@ -42,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let filter_directives = format!("{}{}", args.log_level, ",rustyline=info");
 
     debug!("My tracing filter directives: {}", filter_directives);
+
 
     // Initialize tracing subscriber for logging (needed for validation errors)
     tracing_subscriber::fmt()
@@ -94,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let (message_sender, message_receiver) =
         tokio::sync::mpsc::channel::<PlaintextPayload>(buffer_size);
 
-    let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity);
+    let processor = Processor::new(Arc::clone(&network_manager), identity, peer_identity, crypto::AgoraLegacyCrypto);
 
     // Note the distinct lack of .await here - we want to spawn these tasks and let them run concurrently
     // rather than waiting for each to complete before starting the next.
@@ -111,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     debug!("Stdin input task spawned");
 
     let initial_public_key_announcement =
-        create_public_key_announcement(&processor.my_identity).await;
+        processor.security_module.create_public_key_announcement(&processor.my_identity);
 
     // put it into a packet
     let public_key_announcement_packet = ChatPacket {
