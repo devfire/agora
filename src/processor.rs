@@ -1,9 +1,10 @@
 use crate::{
-    chat_message::{chat_packet::PacketType, ChatPacket, PlaintextPayload},
+    chat_message::{ChatPacket, PlaintextPayload, chat_packet::PacketType},
     crypto::SecurityLayer,
     identity::{MyIdentity, PeerIdentity},
     message_buffer::MessageBuffer,
-    network, packet_handler::PacketHandler,
+    network,
+    packet_handler::PacketHandler,
 };
 
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -11,7 +12,6 @@ use std::{collections::HashSet, sync::Arc};
 
 use tokio::sync::mpsc;
 use tracing::{debug, error};
-
 
 /// Responsible for all message processing. Messages with missing public keys get inserted into the pending_messages HashMap.
 /// Once a public key arrives, we check if there are any in this HashMap waiting to be decrypted.
@@ -57,7 +57,10 @@ impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
                     );
 
                     eprint!("\r\x1b[K");
-                    eprintln!("{} {}: {}", message.timestamp, message.display_name, message.content);
+                    eprintln!(
+                        "{} {}: {}",
+                        message.timestamp, message.display_name, message.content
+                    );
                     eprint!("{} > ", chat_id);
                 } else {
                     debug!("Ignoring self-sent message from '{}'", message.display_name);
@@ -102,7 +105,9 @@ impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
                             &mut message_buffer,
                             &message_sender,
                             &mut requested_peer_keys,
-                        ).await {
+                        )
+                        .await
+                        {
                             error!("Error handling packet: {}", e);
                         }
                     }
@@ -124,36 +129,40 @@ impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
     ) -> anyhow::Result<()> {
         match packet.packet_type {
             Some(PacketType::PublicKey(announcement)) => {
-                handler.handle_public_key_announcement(
-                    announcement,
-                    peer_identity,
-                    message_sender,
-                    requested_peer_keys,
-                ).await
+                handler
+                    .handle_public_key_announcement(
+                        announcement,
+                        peer_identity,
+                        message_sender,
+                        requested_peer_keys,
+                    )
+                    .await
             }
             Some(PacketType::KeyDist(key_dist)) => {
-                handler.handle_key_distribution(
-                    key_dist,
-                    peer_identity,
-                    message_buffer,
-                    message_sender,
-                ).await
+                handler
+                    .handle_key_distribution(
+                        key_dist,
+                        peer_identity,
+                        message_buffer,
+                        message_sender,
+                    )
+                    .await
             }
             Some(PacketType::EncryptedMsg(encrypted_msg)) => {
-                handler.handle_encrypted_message(
-                    encrypted_msg,
-                    peer_identity,
-                    message_buffer,
-                    message_sender,
-                    requested_peer_keys,
-                ).await
+                handler
+                    .handle_encrypted_message(
+                        encrypted_msg,
+                        peer_identity,
+                        message_buffer,
+                        message_sender,
+                        requested_peer_keys,
+                    )
+                    .await
             }
             Some(PacketType::PublicKeyRequest(request)) => {
-                handler.handle_public_key_request(
-                    request,
-                    peer_identity,
-                    requested_peer_keys,
-                ).await
+                handler
+                    .handle_public_key_request(request, peer_identity, requested_peer_keys)
+                    .await
             }
             None => {
                 debug!("Received packet with no packet type");
@@ -171,7 +180,13 @@ impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
 
         tokio::spawn(async move {
             debug!("Starting stdin input task for agent '{}'", chat_id);
-            let mut rustyline_editor = DefaultEditor::new().expect("Editor initialization failed");
+            let mut rustyline_editor = match DefaultEditor::new() {
+                Ok(editor) => editor,
+                Err(e) => {
+                    error!("Unable to initialized the rustyline editor {e}");
+                    return;
+                }
+            };
             let mic_drop = "User has left the chat.".to_string();
 
             loop {
@@ -182,24 +197,46 @@ impl<S: SecurityLayer + Send + Sync + 'static> Processor<S> {
                         if line.is_empty() {
                             continue;
                         }
-                        rustyline_editor.add_history_entry(line.as_str()).expect("Adding to history failed");
+                        if let Err(e) = rustyline_editor.add_history_entry(line.as_str()) {
+                            error!("Could not even add to history {e}")
+                        }
 
                         debug!("Stdin input read line: {}", line);
 
-                        let encrypted_packet = security_module
-                            .create_encrypted_chat_packet(&line, &my_identity)
-                            .expect("Creating encrypted packet failed");
-                        network_manager.send_message(encrypted_packet).await.expect("Sending message failed");
+                        let encrypted_packet_result =
+                            security_module.create_encrypted_chat_packet(&line, &my_identity);
+
+                        match encrypted_packet_result {
+                            Ok(encrypted_packet) => {
+                                if let Err(e) = network_manager.send_message(encrypted_packet).await
+                                {
+                                    error!("Oh no, failed to send the encrypted packet: {e}");
+                                }
+                            }
+                            Err(e) => error!("Failed to encrypt the packet {e}"),
+                        }
                     }
                     Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
-                        let encrypted_packet_bye_bye = security_module
-                            .create_encrypted_chat_packet(&mic_drop, &my_identity)
-                            .expect("Creating encrypted packet failed");
-                        network_manager.send_message(encrypted_packet_bye_bye).await.expect("msg send failed");
+                        let encrypted_packet_bye_bye_result =
+                            security_module.create_encrypted_chat_packet(&mic_drop, &my_identity);
+
+                        match encrypted_packet_bye_bye_result {
+                            Ok(encrypted_packet_bye_bye) => {
+                                if let Err(e) =
+                                    network_manager.send_message(encrypted_packet_bye_bye).await
+                                {
+                                    error!("Failed to send a good bye packet {e}");
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to even create the bye bye packet, very bad. {e}")
+                            }
+                        }
+
                         std::process::exit(0);
                     }
                     Err(err) => {
-                        error!("Error: {:?}", err);
+                        error!("Error: {err}");
                         break;
                     }
                 }

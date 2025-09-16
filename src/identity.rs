@@ -186,7 +186,7 @@ impl MyIdentity {
         let expanded_path = shellexpand::tilde(
             ssh_key_path
                 .to_str()
-                .expect("Expected to find the key file"),
+                .expect("Expected to find the key file"), // I feel like it's ok to crash out here
         )
         .to_string();
         let path = Path::new(&expanded_path);
