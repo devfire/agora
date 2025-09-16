@@ -307,7 +307,7 @@ impl SecurityLayer for AgoraLegacyCrypto {
                 requester_public_key_hash,
                 timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Failed to get system time")
+                    .expect("Failed to get system time") // if this failed, we are done for, bail.
                     .as_nanos() as u64,
             };
 
